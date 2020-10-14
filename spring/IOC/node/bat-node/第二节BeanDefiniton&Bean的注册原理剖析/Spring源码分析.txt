@@ -1,0 +1,55 @@
+
+主讲老师： fox老师
+
+手撕面试官系列之彻底搞懂Spring自动装配和依赖注入
+1. 深入理解FactoryBean, factoryBeanObjectCache和allBeanNamesByType的作用
+getObject()  bean      singletonObjects  myFactroyBean 
+getObjectType()   User.class --映射-- myFactroyBean 
+user    myFactroyBean  --- user
+allBeanNamesByType：   User.class :  myFactroyBean   factoryBeanObjectCache
+
+
+2. @Configuration+@Bean,@Import，@Conditional 实现原理以及应用场景
+
+@Import    BeanDefinitionRegistry
+
+@MapperScan         注册MapperFactoryBean:  Mapper接口  UserMapper OrderMapper
+MapperScannerRegistrar implements ImportBeanDefinitionRegistrar
+
+
+
+2. 手动装配和自动装配的区别，自动装配模型Autowiring Modes 详解
+
+注入查找方式：
+从容中拿bean  beanName  User.class
+byType
+byName
+
+
+xml  早期spring 
+手动装配：  ref
+自动装配：  
+
+autowire modes 自动配置模型:   no  byType  byName  constructor
+
+annotation / java configuration 
+
+
+@Autowired     autowireMode =0   1 2 3  
+
+AutowiredAnnotationBeanPostProcessor
+InjectedElement#inject
+AutowiredFieldElement extends InjectionMetadata.InjectedElement
+AutowiredMethodElement extends InjectionMetadata.InjectedElement
+
+
+3. 深入理解@Autowired，@Resource，@Inject注解,InjectedElement的作用
+4. 依赖注入方式field,setter,constructor实现原理剖析
+
+
+
+
+
+
+
+
