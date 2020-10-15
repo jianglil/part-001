@@ -4,6 +4,45 @@
 
 
 
+# 对象和bean
+
+bean肯定是对象，但对象不一定是bean，被spring管理的对象是bean，能通过getBean方法获得对象就是bean。
+
+
+
+# 单例bean和单例的设计模式不是一个概念
+
+单例bean是，存储在单例池中的key是唯一的，但是bean可以被创建多次，如user1---User@XX1                  user2---User@XX2    都是user类产生的对象，但是，不是同一个key和对象
+
+单例的设计模式是，一个类只能创建一个实例
+
+# 判断一个类是否实现了某个接口
+
+```java
+Class clazz = Class.forName("");
+//判断一个类是否实现了某个接口
+clazz.isAssignableFrom(BeanPostProcessor.class);
+//判断一个实例 是否 实现了某个 接口
+Object instance = new Object();
+boolean isYes = instance instanceof BeanPostProcessor;
+```
+
+
+
+# 类加载器--扫描包
+
+APPClassLoader----- classpath
+
+Bootstrap ------  jre/lib
+
+ext  ----  jre/ext/lib
+
+![image-20201015162256495](IOC-相关类图.assets/image-20201015162256495.png)
+
+asm技术  读取字节码，判断是否有注解存在
+
+
+
 # BeanDefinitionRegistryPostProcessor
 
 ConfigurationClassPostProcessor extends  BeanDefinitionRegistryPostProcessor
@@ -499,6 +538,22 @@ public void registerBeanDefinitions(AnnotationMetadata importingClassMetadata, B
 }
 ```
 
+
+
+# @Autowired
+
+是先byType   然后   byName
+
+
+
+为什么不直接byName，因为，byType筛选的范围小于byName，在byType后，同类型里面再进行byName提高性能。直接byName就需要在所有的bean中进行筛选。
+
+细节是：byType出来只有一个对象，就直接使用这个对象了，不用再进行byName了，byType出来了多个对象，再进行byName，没有找到就报错，如果byType都没找到就直接报错
+
+@Resource就是JNDI的注解了， 只能通过byName获取资源
+
+
+
 # 注册一个配置类
 
 ## 用ImportSelector
@@ -575,6 +630,8 @@ public class AppConfig2 {
 
 # FactoryBean和BeanFactory
 
+FactoryBean也是通过BeanFactory创建 出来的一个特殊的bean，允许程序员自定义一个对象通过FactoryBean间接的放到Spring容器中成为一个Bean。FactoryBean中getObject获取的bean是懒加载的，IOC容器启动完后，BeanDefinitionMap中只有MyFactoryBean的BD,单例对象池singletonObjects中也只有MyFactoryBean这个bean。只有当调用 getBean("myFactoryBean") 的时候才会调getObject()，只会调一次，--这里说明了是懒加载的。getObject()获取的bean没有存储在单例池中，存储在org.springframework.beans.factory.support.FactoryBeanRegistrySupport#factoryBeanObjectCache
+
 ```
 getBean("&myFactoryBean")
 
@@ -592,9 +649,60 @@ getBean("myFactoryBean")
 
 
 
+
+
 获取的关键入口
 
 org.springframework.beans.factory.support.AbstractBeanFactory#getObjectForBeanInstance
+
+
+
+
+
+
+
+
+
+# **Aware  回调接口
+
+## BeanNameAware   
+
+当需要当前bean的name，可以实现这个接口
+
+这个接口存在的原因是，使用属性注入的方式无法将spring中bean的name主动的设置进去。
+
+org.springframework.beans.factory.BeanNameAware   extends Aware
+
+就是在bean的初始化的时候进行回调
+
+org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory#invokeAwareMethods
+
+# InitializingBean 属性填充后的回调
+
+org.springframework.beans.factory.InitializingBean  # afterPropertiesSet
+
+是在属性填充后，且在beanNameAware后
+
+
+
+# BeanPostProcessor
+
+org.springframework.beans.factory.config.BeanPostProcessor
+
+```java
+@Nullable
+default Object postProcessBeforeInitialization(Object bean, String beanName) throws BeansException {
+   return bean;
+}
+@Nullable
+	default Object postProcessAfterInitialization(Object bean, String beanName) throws BeansException {
+		return bean;
+	}
+```
+
+虽然只有两个方法，但是继承的接口有扩展，并且在整个bean的生命周期中被调用了9次
+
+例如：自定义一个类似于@Autowired的注解，就可以仿照AutowiredAnnotationBeanPostProcessor来写一个自定义的BeanPostProcessor实现类。
 
 
 
