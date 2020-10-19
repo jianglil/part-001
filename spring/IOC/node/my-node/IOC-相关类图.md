@@ -590,6 +590,35 @@ public class AppConfig2 {
 
 
 
+# 在createBean 的时候加载bean到JVM中
+
+org.springframework.beans.factory.support.AbstractBeanFactory#doResolveBeanClass
+
+```java
+//拿到类加载器
+ClassLoader beanClassLoader = getBeanClassLoader();
+```
+
+类加载器：spring的类加载器  这里是默认的类加载器AppClassLoader  同样可以配置自己的 类加载器
+
+```java
+@Nullable
+private ClassLoader beanClassLoader = ClassUtils.getDefaultClassLoader();
+//----|下面  org.springframework.util.ClassUtils#getDefaultClassLoader
+cl = Thread.currentThread().getContextClassLoader();
+
+//加载的顺序
+//如果set了就不会进来了，直接去自己设置的
+
+		//先取当前线程对应的classLoader
+		//再取cllassUtils类的ClassLoader
+		//最后再取系统指定的ClassLoader---这默认的是appclassloader  可以配置
+```
+
+拿到了类加载器，然后通过反射把扫描后的全限定类名加载为class到JVM中
+
+
+
 # bean的注册不是实例化，只是注册
 
 所以在使用@Bean的时候，只是注册了，并不会调用方法，只有实例化的时候才会调用该方法

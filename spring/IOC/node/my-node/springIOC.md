@@ -42,11 +42,13 @@
 
 
 
+luban大纲
+
+![image-20201019103848799](springIOC.assets/image-20201019103848799.png)
 
 
 
-
-
+![image-20201019103911627](springIOC.assets/image-20201019103911627.png)
 
 
 
@@ -1036,27 +1038,64 @@ org.springframework.beans.factory.support.DefaultSingletonBeanRegistry#getSingle
 
 
 
-## 自动实例化入口
+## 容器启动时自动创建非懒加载的单例bean
 
-实例化所有剩余的(非懒加载)单例。
+实例化所有剩余的**(非懒加载)单例**。
 
-为什么是剩余的？
+- [x] 为什么是剩余的？
 
-为什么不是懒加载的？
+有些系统需要的bean在这这之前就调getBean方法创建了实例
 
-为什么是单例？
+![image-20201019093132710](springIOC.assets/image-20201019093132710.png)
 
-org.springframework.context.support.AbstractApplicationContext#finishBeanFactoryInitialization
+- [x] 为什么不是懒加载的？
 
-org.springframework.beans.factory.config.ConfigurableListableBeanFactory#preInstantiateSingletons
+既然是懒加载，就不是在容器启动的时候创建
 
-for循环去创建bean { AbstractBeanFactory#getBean  }
+- [x] 为什么是单例？
 
-org.springframework.beans.factory.support.AbstractBeanFactory#getBean(java.lang.String)---走到真实入口
+原型的bean创建了也没用，因为每次创建都是重新创建的一个对象，不会缓存起来
+
+==org.springframework.context.support.AbstractApplicationContext#finishBeanFactoryInitialization==
+
+## 创建单例bean之前的准备工作
+
+==org.springframework.beans.factory.support.DefaultListableBeanFactory#preInstantiateSingletons==
+
+### 遍历注册的BeanDefinition  循环1
+
+```java
+List<String> beanNames = new ArrayList<>(this.beanDefinitionNames);
+for (String beanName : beanNames) {。。。}
+```
+
+## 一、合并BeanDefinition
+
+如果某个BeanDefinition存在父BeanDefinition，那么则要进行合并
+
+```java
+//如果某个BeanDefinition存在父BeanDefinition，那么则要进行合并 
+//将其他BeanDefinition统一转换为RootBeanDefinition  -- 表示顶级的db,没有父定义了
+RootBeanDefinition bd = getMergedLocalBeanDefinition(beanName);
+```
+
+**筛选能被创建的BeanDefinition**
+
+```java
+!bd.isAbstract() && bd.isSingleton() && !bd.isLazyInit()
+```
+
+处理myFactoryBean 和 &myFactoryBean  的 beanName
 
 
 
-## 真实的入口
+## 二、getBean-doGetBean
+
+### spring获取bean的入口
+
+不管是容器启动过程中的获取，还是程序调用的，都是通过这个方法获取bean的
+
+==org.springframework.beans.factory.support.AbstractBeanFactory#getBean(java.lang.String)==走到真实入口
 
 为什么是这个类？
 
@@ -1066,10 +1105,6 @@ org.springframework.beans.factory.support.AbstractBeanFactory#getBean(java.lang.
 
 bean的注册 相关的总接口是BeanDefinitionRegistry而**管理bean生命周期的是BeanFactory接口**---其抽象实现类org.springframework.beans.factory.support.AbstractBeanFactory#getBean      就处理了getBean
 
-### getBean--doGetBean
-
-org.springframework.beans.factory.support.AbstractBeanFactory#getBean
-
 ```java
 @Override
 public Object getBean(String name) throws BeansException {
@@ -1077,9 +1112,13 @@ public Object getBean(String name) throws BeansException {
 }
 ```
 
-org.springframework.beans.factory.support. AbstractBeanFactory#doGetBean
+==org.springframework.beans.factory.support. AbstractBeanFactory#doGetBean==
 
-### 1、如果单例对象池中有，就直接从单例对象池中取
+这里处理了三、四、五、六、七
+
+
+
+## 三、先从单例池中取
 
 org.springframework.beans.factory.support. AbstractBeanFactory#doGetBean
 
@@ -1118,9 +1157,9 @@ protected Object getSingleton(String beanName, boolean allowEarlyReference) {
 }
 ```
 
-存在就直接返回单例对象 池中的对象
+**存在就直接返回单例对象 池中的对象**  ---  这个多处使用，因为每次getBean都需要判断是不是FactoryBean
 
-org.springframework.beans.factory.support. AbstractBeanFactory#doGetBean
+进一步处理了FactoryBean--因为存在&和getObject的区别
 
 ```java
 // 普通bean和factoryBean的判断
@@ -1129,9 +1168,9 @@ bean = getObjectForBeanInstance(sharedInstance, name, beanName, null);
 // 。。。。。
 ```
 
-未完待续？。。。
 
-### 2、标记bean开始创建
+
+## 四、标记bean开始创建
 
 ```java
 if (!typeCheckOnly) {
@@ -1140,9 +1179,11 @@ if (!typeCheckOnly) {
 }
 ```
 
-### 3、从容器中获取待创建的BeanDefinition
+## 五、再次合并BeanDefinition 
 
-统一使用RootBeanDefinition 接收
+因为有些是直接通过getBean获取bean的，也是需要调用合并的
+
+统一使用RootBeanDefinition 接收  得到  mdb 
 
 ```java
 //  返回 RootBeanDefinition
@@ -1162,21 +1203,29 @@ else {
 }
 ```
 
-### 4、如果有配置DependsOn依赖，先去获取依赖
+## 六、处理依赖DependsOn
+
+对于类的依赖关系，可以使用@DependsOn处理，在条件注解中常用
+
+不会处理处理extends依赖
+
+```java
+// 如果有配置DependsOn依赖，先去获取依赖，条件注解常用  @DependsOn
+//原理是用了两个map存储依赖的beanName和被依赖的beanName，所有的依赖关系
+// A依赖B  dependentBeanMap 存储B:A
+// A依赖B  dependenciesForBeanMap 存储A:B
+String[] dependsOn = mbd.getDependsOn();
+```
 
 
 
-### 5、开始实例化过程
-
-isSingleton
-
-isPrototype
-
-other
-
-## isSingleton---创建
+## 七、根据scope分别处理
 
 org.springframework.beans.factory.support.AbstractBeanFactory#doGetBean
+
+### 单例的处理
+
+先createBean  将创建完的bean放入单例池中
 
 ```java
 //判断单例
@@ -1229,31 +1278,68 @@ catch (BeansException ex) {
 }
 ```
 
-### createBean--doCreateBean 
+### 原型的处理
 
-==AbstractAutowireCapableBeanFactory#createBean==
+和单例差不多，只是不用放入单例池，调用createBean创建bean后直接返回
 
-org.springframework.beans.factory.support. AbstractAutowireCapableBeanFactory#createBean
+### 其它作用域-request|session
+
+和单例类似，调用createBean创建bean后，放入对应的作用域中
+
+## 八、createBean-加载MBD的class
+
+==org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory#createBean==
+
+处理了八、九
+
+到这里前期工作做完了，拿到了合并后的MBD，有了BeanDefinition之后，后续就会基于BeanDefinition去创建Bean，而创建Bean就必须实例化对象，而实例化就必须先加载当前BeanDefinition所对应的class
 
 ```java
 // 判断当前要创建的bean是否可以实例化，是否可以通过类加载器加载
 Class<?> resolvedClass = resolveBeanClass(mbd, beanName);
-
-// 实例化前的后置处理器调用 InstantiationAwareBeanPostProcessor
-// 第1次调用后置处理器
-Object bean = resolveBeforeInstantiation(beanName, mbdToUse);
-
-// 返回bean实例
-Object beanInstance = doCreateBean(beanName, mbdToUse, args);
 ```
 
-#### 第1次调用后置处理器  ？？？
+org.springframework.beans.factory.support.AbstractBeanFactory#resolveBeanClass
 
-InstantiationAwareBeanPostProcessor
+org.springframework.beans.factory.support.AbstractBeanDefinition#hasBeanClass
 
-org.springframework.beans.factory.support. AbstractAutowireCapableBeanFactory#createBean
+```java
+//起初注册bean的时候，BeanDefinition里面的beanClass对象还只是全限定类名-String
+//当beanClass为Class的时候就说明是加载到JVM中了
+return (this.beanClass instanceof Class);
+```
 
-。。。。。。。。。。。。。。.AbstractAutowireCapableBeanFactory#resolveBeforeInstantiation
+org.springframework.beans.factory.support.AbstractBeanFactory#doResolveBeanClass
+
+```java
+//反射进行加载className对应的类
+return ClassUtils.forName(className, dynamicLoader);
+```
+
+
+
+## 九、实例化前-后置处理器
+
+这里有个**自定义实例化**的扩展，如果bean的实例化过程不交给spring处理，就实现org.springframework.beans.factory.config.InstantiationAwareBeanPostProcessor接口，这里就会直接返回实例化后的bean，不会走后续的spring实例化过程了，为了AOP会跳转到**初始化后的-后置处理器**逻辑里，然后结束
+
+```java
+try {
+   // Give BeanPostProcessors a chance to return a proxy instead of the target bean instance.
+   // 实例化前的后置处理器调用 InstantiationAwareBeanPostProcessor
+   // 第1次调用后置处理器
+   Object bean = resolveBeforeInstantiation(beanName, mbdToUse);
+   if (bean != null) {
+      // 直接返回自己实例化的结果，不再使用spring的实例化目标对象
+      return bean;
+   }
+}
+catch (Throwable ex) {
+   throw new BeanCreationException(mbdToUse.getResourceDescription(), beanName,
+         "BeanPostProcessor before instantiation of bean failed", ex);
+}
+```
+
+org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory  #resolveBeforeInstantiation
 
 ```java
 protected Object resolveBeforeInstantiation(String beanName, RootBeanDefinition mbd) {
@@ -1270,6 +1356,7 @@ protected Object resolveBeforeInstantiation(String beanName, RootBeanDefinition 
             bean = applyBeanPostProcessorsBeforeInstantiation(targetType, beanName);
             if (bean != null) {
                // 如果bean不为空，调用 postProcessAfterInitialization 方法，否则走正常实例化流程
+               //这里走初始化后的逻辑，为了AOP
                bean = applyBeanPostProcessorsAfterInitialization(bean, beanName);
             }
          }
@@ -1280,23 +1367,19 @@ protected Object resolveBeforeInstantiation(String beanName, RootBeanDefinition 
 }
 ```
 
+## 十、doCreateBean
 
+==org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory#doCreateBean==
 
+处理了十、十一、十二、十三、十四、十五、十六、十七、十八、十九
 
-
- ==AbstractAutowireCapableBeanFactory#doCreateBean== 
-
-org.springframework.beans.factory.support. AbstractAutowireCapableBeanFactory#doCreateBean 
-
-这里是个创建的模板，具体就是下面的了
-
-
-
-## 创建bean
-
-org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory#doCreateBean
+## 十一、推断构造方法
 
 org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory#createBeanInstance
+
+推断构造---实例化都在这里
+
+## 十二、实例化
 
 ### 1、@Bean修饰的bean被创建
 
@@ -1392,23 +1475,170 @@ return instantiateBean(beanName, mbd);
 
 
 
+## 十三、BeanDefinition的后置处理
+
+org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory #applyMergedBeanDefinitionPostProcessors
+
+这个扩展点能拿到mdb 允许后置处理器修改合并的bean定义，但是没啥用
 
 
 
-
-## 填充属性
+## 十四、实例化后
 
 org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory#populateBean
 
+实例化后---填充属性---填充属性后  都在这里
+
+在实例化后 的处理，接口还是实例化前的那个，执行的方式是实例化后方法
+
+org.springframework.beans.factory.config.InstantiationAwareBeanPostProcessor #postProcessAfterInstantiation
+
+```java
+//  在属性设置之前修改bean的状态  InstantiationAwareBeanPostProcessor#postProcessAfterInstantiation
+// 第5次调用后置处理器
+if (!mbd.isSynthetic() && hasInstantiationAwareBeanPostProcessors()) {
+    for (BeanPostProcessor bp : getBeanPostProcessors()) {
+        if (bp instanceof InstantiationAwareBeanPostProcessor) {
+            InstantiationAwareBeanPostProcessor ibp = (InstantiationAwareBeanPostProcessor) bp;
+            //在目标对象实例化之后调用，此时对象被实例化，但是对象的属性还未设置。如果该方法返回
+            //fasle,则会忽略之后的属性设置。返回true，按正常流程设置属性值
+            if (!ibp.postProcessAfterInstantiation(bw.getWrappedInstance(), beanName)) {
+                continueWithPropertyPopulation = false;
+                break;
+            }
+        }
+    }
+}
+```
 
 
 
-
-## 初始化bean
-
-org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory#initializeBean(java.lang.String, java.lang.Object, org.springframework.beans.factory.support.RootBeanDefinition)
+## 十五、填充属性
 
 
+
+## 十六、填充属性后
+
+这个接口还是实例化前的的那个接口
+
+org.springframework.beans.factory.config.InstantiationAwareBeanPostProcessor#postProcessProperties
+
+```java
+// 第6次调用后置处理器
+// 可以在该方法内对属性值进行修改（此时属性值还未设置，但可以修改原本会设置的进去的属性值）。
+// 如果postProcessAfterInstantiation方法返回false，该方法不会调用
+// 依赖注入逻辑
+for (BeanPostProcessor bp : getBeanPostProcessors()) {
+   if (bp instanceof InstantiationAwareBeanPostProcessor) {
+
+      //@Autowired 属性注入逻辑
+      // AutowiredAnnotationBeanPostProcessor.postProcessProperties
+      //AutowiredAnnotationBeanPostProcessor.AutowiredMethodElement.inject
+      //AutowiredAnnotationBeanPostProcessor.AutowiredFieldElement#inject
+      //DefaultListableBeanFactory#resolveDependency
+      //DefaultListableBeanFactory#doResolveDependency
+      //DependencyDescriptor#resolveCandidate
+      // 此方法直接返回 beanFactory.getBean(beanName);
+
+      InstantiationAwareBeanPostProcessor ibp = (InstantiationAwareBeanPostProcessor) bp;
+      PropertyValues pvsToUse = ibp.postProcessProperties(pvs, bw.getWrappedInstance(), beanName);
+      if (pvsToUse == null) {
+         if (filteredPds == null) {
+            filteredPds = filterPropertyDescriptorsForDependencyCheck(bw, mbd.allowCaching);
+         }
+         pvsToUse = ibp.postProcessPropertyValues(pvs, filteredPds, bw.getWrappedInstance(), beanName);
+         if (pvsToUse == null) {
+            return;
+         }
+      }
+      pvs = pvsToUse;
+   }
+}
+```
+
+## 十七、执行Aware
+
+org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory#initializeBean
+
+Aware----初始化前---初始化---初始化后 都在这里
+
+执行Aware是在当前Bean创建的时候就调用了这个方法，而后置处理器里的都是在创建当前Bean后，执行的，只是执行的物理位置是这样的，逻辑位置不是按顺序的。
+
+这里的回调就是接口---类似于静态代理的方式
+
+```java
+if (System.getSecurityManager() != null) {
+   AccessController.doPrivileged((PrivilegedAction<Object>) () -> {
+      invokeAwareMethods(beanName, bean);
+      return null;
+   }, getAccessControlContext());
+}
+else {
+   // 调用Aware方法,判断Aware类型可以分别设置 beanName，beanClassLoader、BeanFactory 属性值
+   invokeAwareMethods(beanName, bean);
+}
+```
+
+## 十八、初始化前
+
+
+
+```java
+if (mbd == null || !mbd.isSynthetic()) {
+   //  BeanPostProcessor.postProcessBeforeInitialization
+   //第7次调用后置处理器
+   //  如果配置了@PostConstruct  会调用
+   // InitDestroyAnnotationBeanPostProcessor#postProcessBeforeInitialization
+   //  Aware方法调用  ApplicationContextAware  EnvironmentAware    ApplicationEventPublisherAware
+   //ApplicationContextAwareProcessor#postProcessBeforeInitialization
+   wrappedBean = applyBeanPostProcessorsBeforeInitialization(wrappedBean, beanName);
+}
+```
+
+org.springframework.beans.factory.config.BeanPostProcessor#postProcessBeforeInitialization
+
+```java
+Object result = existingBean;
+for (BeanPostProcessor processor : getBeanPostProcessors()) {
+   Object current = processor.postProcessBeforeInitialization(result, beanName);
+   if (current == null) {
+      return result;
+   }
+   result = current;
+}
+```
+
+
+
+## 十九、初始化
+
+```java
+// 执行bean生命周期回调的init方法    自定义bean的init（）
+invokeInitMethods(beanName, wrappedBean, mbd);
+```
+
+## 二十、初始化后
+
+```java
+if (mbd == null || !mbd.isSynthetic()) {
+   //  BeanPostProcessor.postProcessAfterInitialization
+   //第8次调用后置处理器
+   //   aop实现：AbstractAutoProxyCreator#postProcessAfterInitialization
+   wrappedBean = applyBeanPostProcessorsAfterInitialization(wrappedBean, beanName);
+}
+```
+
+org.springframework.beans.factory.config.BeanPostProcessor#postProcessAfterInitialization
+
+```java
+for (BeanPostProcessor processor : getBeanPostProcessors()) {
+   Object current = processor.postProcessAfterInitialization(result, beanName);
+   if (current == null) {
+      return result;
+   }
+   result = current;
+}
+```
 
 
 
@@ -1518,18 +1748,392 @@ xml方式在`obtainFreshBeanFactory`做完了
 
 # bean的生命周期
 
+[生命周期的源码流程图](https://www.processon.com/view/link/5eafa609f346fb177ba8091f)
 
 
 
+生成了BeanDefinition
+
+```
+在bean的注册过程中已经生成了BeanDefinition，这是通过读取xml（文件流）或者注解（ASM字节码技术）的方式生成的。
+```
+
+合并BeanDefinition为MDB
+
+加载beanClass到JVM
+
+实例化前-后置处理器   InstantiationAwareBeanPostProcessor#postProcessBeforeInstantiation
+
+实例化
+
+BeanDefinition-后置处理器  MergedBeanDefinitionPostProcessor#postProcessMergedBeanDefinition
+
+实例化后-后置处理器   InstantiationAwareBeanPostProcessor#postProcessAfterInstantiation
+
+填充属性
+
+填充属性后-后置处理器 InstantiationAwareBeanPostProcessor#postProcessProperties
+
+Aware回调执行
+
+初始化前-后置处理器   AbstractAutowireCapableBeanFactory#applyBeanPostProcessorsBeforeInitialization
+
+初始化
+
+初始化后-后置处理器 AbstractAutowireCapableBeanFactory#applyBeanPostProcessorsAfterInitialization
 
 
 
+![spring-生命周期](springIOC.assets/spring-生命周期1.png)
 
+
+
+# 依赖注入
+
+## 分类
+
+一、手动
+
+set方法，构造方法
+
+二、自动
+
+1、xml中的
+
+byType、byName、constructor、no、default
+
+2、注解中的
+
+@Autowired、@Value
+
+
+
+按照其他维度也可以说成3类：byType、byName、constructor
+
+
+
+## 1、手动注入
+
+setter方法、构造方法
+
+![image-20201019104224066](springIOC.assets/image-20201019104224066.png)
+
+在XML中手写的，底层依赖的是setter方法、构造方法
+
+## 2、自动注入
+
+## ①xml中的自动注入  
+
+setter方法、构造方法
+
+![image-20201019104957798](springIOC.assets/image-20201019104957798.png)
+
+setter方法 ：byType和byName 的原理
+
+1. 先找出所有的setter方法，拿到入参类型（byType）和setter方法名（byName【setAge-->age】）
+2. 将配置的beanName对应的bean注入setter方法 的入参中
+3. 然后通过**反射调用**setter方法
+
+构造方法：constructor是使用构造
+
+default是使用beans标签里的类型
+
+no是不使用自动注入
+
+#### 源码
+
+在填充属性后，填充属性后的后置处理器 之前，这个是spring自带的，而注解通过后置处理器扩展的，相当于一个插件实现的，spring默认安装了这个插件
+
+这里的注入点是setter方法，在注册bean的时候就会将每个类setter方法存储起来
+
+org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory#populateBean
+
+autowireMode这个值在注解 方式中为no
+
+```java
+// 判断autowireMode是否是 by_name或者by_type
+if (mbd.getResolvedAutowireMode() == AUTOWIRE_BY_NAME || mbd.getResolvedAutowireMode() == AUTOWIRE_BY_TYPE) {
+   MutablePropertyValues newPvs = new MutablePropertyValues(pvs);
+   // Add property values based on autowire by name if applicable.
+   if (mbd.getResolvedAutowireMode() == AUTOWIRE_BY_NAME) {
+      // byName
+      autowireByName(beanName, mbd, bw, newPvs);
+   }
+   // Add property values based on autowire by type if applicable.
+   if (mbd.getResolvedAutowireMode() == AUTOWIRE_BY_TYPE) {
+      // byType
+      autowireByType(beanName, mbd, bw, newPvs);
+   }
+   pvs = newPvs;
+}
+```
+
+## ②  @Autowired的注解
+
+**原理：是先byType然后再byName   因为，byName有可能不是需要的类型，找到了没用**
+
+==后置处理器的一种应用==
+
+普通方法
+
+构造方法
+
+属性
+
+### 源码-@Autowired&@Value
+
+分析，注解方式的自动注入就是一个插件，利用的就是BeanPostProcessor这个扩展点，这里的实现类是org.springframework.beans.factory.annotation.AutowiredAnnotationBeanPostProcessor
+
+![image-20201019132825411](springIOC.assets/image-20201019132825411.png)
+
+#### 1、注入容器
+
+在类AutowiredAnnotationBeanPostProcessor创建的时候就调了setBeanFactory方法，将这个工厂注入了
+
+```java
+//回调BeanFactory的，是在初始化之前调用的
+@Override
+public void setBeanFactory(BeanFactory beanFactory) {
+   if (!(beanFactory instanceof ConfigurableListableBeanFactory)) {
+      throw new IllegalArgumentException(
+            "AutowiredAnnotationBeanPostProcessor requires a ConfigurableListableBeanFactory: " + beanFactory);
+   }
+   this.beanFactory = (ConfigurableListableBeanFactory) beanFactory;
+}
+```
+
+#### 2、找注入点
+
+利用了后置处理器org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory #applyMergedBeanDefinitionPostProcessors
+
+```java
+synchronized (mbd.postProcessingLock) {
+   if (!mbd.postProcessed) {
+      try {
+         //允许后置处理器修改合并的bean定义
+         // MergedBeanDefinitionPostProcessor#postProcessMergedBeanDefinition
+         // 第3次调用后置处理器
+         // AutowiredAnnotationBeanPostProcessor 解析@Autowired和@Value，找到注入点 封装到InjectionMetadata
+         applyMergedBeanDefinitionPostProcessors(mbd, beanType, beanName);
+      }
+      catch (Throwable ex) {
+         throw new BeanCreationException(mbd.getResourceDescription(), beanName,
+               "Post-processing of merged bean definition failed", ex);
+      }
+      mbd.postProcessed = true;
+   }
+}
+```
+
+org.springframework.beans.factory.annotation.AutowiredAnnotationBeanPostProcessor #postProcessMergedBeanDefinition
+
+org.springframework.beans.factory.annotation.AutowiredAnnotationBeanPostProcessor #findAutowiringMetadata
+
+
+
+将所有的注入点存放在缓存中org.springframework.beans.factory.annotation.AutowiredAnnotationBeanPostProcessor #injectionMetadataCache
+
+构建缓存点
+
+org.springframework.beans.factory.annotation.AutowiredAnnotationBeanPostProcessor #buildAutowiringMetadata
+
+
+
+#### 3、注入的逻辑
+
+在BeanPostProcessor中实现的，在  属性填充后   的处理逻辑中
+
+org.springframework.beans.factory.config.InstantiationAwareBeanPostProcessor#postProcessProperties
+
+```java
+//InstantiationAwareBeanPostProcessor.postProcessProperties
+// 第6次调用后置处理器
+// 可以在该方法内对属性值进行修改（此时属性值还未设置，但可以修改原本会设置的进去的属性值）。
+// 如果postProcessAfterInstantiation方法返回false，该方法不会调用
+// 依赖注入逻辑
+for (BeanPostProcessor bp : getBeanPostProcessors()) {
+   if (bp instanceof InstantiationAwareBeanPostProcessor) {
+
+      //@Autowired 属性注入逻辑
+      // AutowiredAnnotationBeanPostProcessor.postProcessProperties
+      //AutowiredAnnotationBeanPostProcessor.AutowiredMethodElement.inject
+      //AutowiredAnnotationBeanPostProcessor.AutowiredFieldElement#inject
+      //DefaultListableBeanFactory#resolveDependency
+      //DefaultListableBeanFactory#doResolveDependency
+      //DependencyDescriptor#resolveCandidate
+      // 此方法直接返回 beanFactory.getBean(beanName);
+
+      InstantiationAwareBeanPostProcessor ibp = (InstantiationAwareBeanPostProcessor) bp;
+      PropertyValues pvsToUse = ibp.postProcessProperties(pvs, bw.getWrappedInstance(), beanName);
+      if (pvsToUse == null) {
+         if (filteredPds == null) {
+            filteredPds = filterPropertyDescriptorsForDependencyCheck(bw, mbd.allowCaching);
+         }
+         pvsToUse = ibp.postProcessPropertyValues(pvs, filteredPds, bw.getWrappedInstance(), beanName);
+         if (pvsToUse == null) {
+            return;
+         }
+      }
+      pvs = pvsToUse;
+   }
+}
+```
+
+org.springframework.beans.factory.annotation.AutowiredAnnotationBeanPostProcessor #postProcessProperties
+
+```java
+@Override
+public PropertyValues postProcessProperties(PropertyValues pvs, Object bean, String beanName) {
+   InjectionMetadata metadata = findAutowiringMetadata(beanName, bean.getClass(), pvs);
+   try {
+      metadata.inject(bean, beanName, pvs);
+   }
+   catch (BeanCreationException ex) {
+      throw ex;
+   }
+   catch (Throwable ex) {
+      throw new BeanCreationException(beanName, "Injection of autowired dependencies failed", ex);
+   }
+   return pvs;
+}
+```
+
+
+
+## 依赖注入重要组件
+
+
+
+不管是xml的自动注入还是注解的，都会使用
+
+```java
+DependencyDescriptor desc = new AutowireByTypeDependencyDescriptor(methodParam, eager);
+//这里就是解决依赖的方法，传进来的可以是依赖描述 DependencyDescriptor
+Object autowiredArgument = resolveDependency(desc, beanName, autowiredBeanNames, converter);
+```
+
+DependencyDescriptor  依赖描述有 ：
+
+setter方法参数
+
+属性
+
+构造器
 
 
 
 # 扩展点FactoryBean
 
+## 创建FactoryBean 放入单例池
+
+放入的是《myFactoryBean-FactoryBean》
+
+在创建单例Bean之前的准备过程中，就自动的创建了FactoryBean
+
+```java
+if (isFactoryBean(beanName)) {
+    //这里是容器启动加载的FactoryBean --- beanName规则是使用 别名 &myFactoryBean 存储在单例池中
+   Object bean = getBean(FACTORY_BEAN_PREFIX + beanName);
+   if (bean instanceof FactoryBean) {
+      final FactoryBean<?> factory = (FactoryBean<?>) bean;
+      boolean isEagerInit;
+      if (System.getSecurityManager() != null && factory instanceof SmartFactoryBean) {
+         isEagerInit = AccessController.doPrivileged((PrivilegedAction<Boolean>)
+                     ((SmartFactoryBean<?>) factory)::isEagerInit,
+               getAccessControlContext());
+      }
+      else {
+         isEagerInit = (factory instanceof SmartFactoryBean &&
+               ((SmartFactoryBean<?>) factory).isEagerInit());
+      }
+      if (isEagerInit) {
+         getBean(beanName);
+      }
+   }
+}
+```
+
+在启动过程中就创建了MyBeanDefinition ，调用了`getBean(FACTORY_BEAN_PREFIX + beanName)`方法，存储到了单例池中，beanName是&myBeanDefiniton
+
+
+
+## 获取FactoryBean  和  getObject  的 处理
+
+### 入口
+
+在doGetBean中，从单例池中获取了FactoryBean后，（如果传进来的beanName是&myFactoryBean，会通过beanName转化器变成myFactoryBean，所以还是会从单例池中获取到第一步的FactoryBean对象）
+
+进一步处理了FactoryBean--因为存在&和getObject的区别
+
+org.springframework.beans.factory.support.AbstractBeanFactory#doGetBean
+
+```java
+//转换对应的beanName
+// 1.带&前缀的去掉前缀
+// 2.从aliasMap中找name对应id，bean没有配id就用name
+final String beanName = transformedBeanName(name);
+//这里一定会拿到myFactoryBean,因为beanName总是myFactoryBean
+Object sharedInstance = getSingleton(beanName);
+if (sharedInstance != null && args == null) {
+    // 普通bean和factoryBean的判断   注意name是传进来的，beanName是单例池中的myFactoryBean 
+    bean = getObjectForBeanInstance(sharedInstance, name, beanName, null);
+}
+```
+
+
+
+org.springframework.beans.factory.support.AbstractBeanFactory#getObjectForBeanInstance
+
+### &myFactoryBean的处理
+
+如果传进来的name 是&myFactoryBean 就直接返回单例池中的FactoryBean
+
+```java
+//  涉及FactoryBean的判断，直接返回普通bean的条件    类型是否是FactoryBean || name首字符是否是&
+if (!(beanInstance instanceof FactoryBean) || BeanFactoryUtils.isFactoryDereference(name)) {
+    
+   return beanInstance;
+}
+```
+
+
+
+### myFactoryBean的处理
+
+#### 从FactoryBean的缓存中获取
+
+FactoryBean的缓存容器是org.springframework.beans.factory.support.FactoryBeanRegistrySupport#==factoryBeanObjectCache==
+
+```java
+private final Map<String, Object> factoryBeanObjectCache = new ConcurrentHashMap<>(16);
+```
+
+```java
+if (mbd == null) {
+   //从Bean工厂缓存中获取Bean的实例对象   避免多例
+   object = getCachedObjectForFactoryBean(beanName);
+}
+```
+
+#### 调用getObject方法获取
+
+org.springframework.beans.factory.support.FactoryBeanRegistrySupport#getObjectFromFactoryBean
+
+org.springframework.beans.factory.support.FactoryBeanRegistrySupport#doGetObjectFromFactoryBean
+
+```java
+object = factory.getObject();
+```
+
+#### 存入缓存
+
+org.springframework.beans.factory.support.FactoryBeanRegistrySupport#getObjectFromFactoryBean
+
+```java
+if (containsSingleton(beanName)) {
+   this.factoryBeanObjectCache.put(beanName, object);
+}
+```
 
 
 
@@ -1539,20 +2143,13 @@ xml方式在`obtainFreshBeanFactory`做完了
 
 
 
+# 扩展点-BeanPostProcessor
 
+第三次调用：AutowiredAnnotationBeanPostProcessor也是MergedBeanDefinitionPostProcessor
 
+org.springframework.beans.factory.annotation.AutowiredAnnotationBeanPostProcessor
 
-
-
-
-
-
-
-
-
-
-
-
+![image-20201019095850601](springIOC.assets/image-20201019095850601.png)
 
 
 
