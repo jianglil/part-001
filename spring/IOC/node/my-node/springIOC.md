@@ -1481,6 +1481,25 @@ org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory #ap
 
 这个扩展点能拿到mdb 允许后置处理器修改合并的bean定义，但是没啥用
 
+但是在很多注解的**查找并保存注入点**的时候就会用这个，**作用是用来检查BeanDefinition**如：
+
+@PostConstruct
+
+org.springframework.beans.factory.annotation.InitDestroyAnnotationBeanPostProcessor #postProcessMergedBeanDefinition
+
+```java
+@Override
+public void postProcessMergedBeanDefinition(RootBeanDefinition beanDefinition, Class<?> beanType, String beanName) {
+   LifecycleMetadata metadata = findLifecycleMetadata(beanType);
+    //这里就可以检查BeanDefinition了并将这个init方法set到BeanDefinition中存储
+   metadata.checkConfigMembers(beanDefinition);
+}
+```
+
+@Autowired
+
+org.springframework.beans.factory.annotation.AutowiredAnnotationBeanPostProcessor#postProcessMergedBeanDefinition
+
 
 
 ## 十四、实例化后
@@ -1515,7 +1534,7 @@ if (!mbd.isSynthetic() && hasInstantiationAwareBeanPostProcessors()) {
 
 ## 十五、填充属性
 
-
+填充属性就是依赖注入的流程----见依赖注入
 
 ## 十六、填充属性后
 
@@ -1531,16 +1550,8 @@ org.springframework.beans.factory.config.InstantiationAwareBeanPostProcessor#pos
 for (BeanPostProcessor bp : getBeanPostProcessors()) {
    if (bp instanceof InstantiationAwareBeanPostProcessor) {
 
-      //@Autowired 属性注入逻辑
-      // AutowiredAnnotationBeanPostProcessor.postProcessProperties
-      //AutowiredAnnotationBeanPostProcessor.AutowiredMethodElement.inject
-      //AutowiredAnnotationBeanPostProcessor.AutowiredFieldElement#inject
-      //DefaultListableBeanFactory#resolveDependency
-      //DefaultListableBeanFactory#doResolveDependency
-      //DependencyDescriptor#resolveCandidate
-      // 此方法直接返回 beanFactory.getBean(beanName);
-
-      InstantiationAwareBeanPostProcessor ibp = (InstantiationAwareBeanPostProcessor) bp;
+      //@Autowired 属性注入逻辑 这个是扩展出来的，原本的属性填充是ByType和ByName
+       InstantiationAwareBeanPostProcessor ibp = (InstantiationAwareBeanPostProcessor) bp;
       PropertyValues pvsToUse = ibp.postProcessProperties(pvs, bw.getWrappedInstance(), beanName);
       if (pvsToUse == null) {
          if (filteredPds == null) {
@@ -1579,6 +1590,10 @@ else {
 }
 ```
 
+==Aware为什么比BeanPostProcessor早执行？==
+
+这里会疑问为什么BeanPostProcessor实现类的创建过程中不是按照顺序来执行的，是因为，处理BeanPostProcessor是通过for循环所有的BeanPostProcessor实例，然后再分别调用不同的扩展点的，当本身就是BeanPostProcessor创建时，不会找到自己的实例，所以整个BeanPostProcessor实例化过程中的扩展点都不会执行，直到被创建出来后，下一个bean实例化时就会带上这个BeanPostProcessor的扩展点
+
 ## 十八、初始化前
 
 
@@ -1608,7 +1623,29 @@ for (BeanPostProcessor processor : getBeanPostProcessors()) {
 }
 ```
 
+==@PostConstruct注解就是对这个扩展点的应用==
 
+![image-20201020165004236](springIOC.assets/image-20201020165004236.png)
+
+org.springframework.beans.factory.annotation.InitDestroyAnnotationBeanPostProcessor#postProcessBeforeInitialization
+
+```java
+@Override
+public Object postProcessBeforeInitialization(Object bean, String beanName) throws BeansException {
+   LifecycleMetadata metadata = findLifecycleMetadata(bean.getClass());
+   try {
+      //  @PostConstruct  回调--直接反射 出来的Method 调用了method.invoke方法
+      metadata.invokeInitMethods(bean, beanName);
+   }
+   catch (InvocationTargetException ex) {
+      throw new BeanCreationException(beanName, "Invocation of init method failed", ex.getTargetException());
+   }
+   catch (Throwable ex) {
+      throw new BeanCreationException(beanName, "Failed to invoke init method", ex);
+   }
+   return bean;
+}
+```
 
 ## 十九、初始化
 
@@ -1640,7 +1677,7 @@ for (BeanPostProcessor processor : getBeanPostProcessors()) {
 }
 ```
 
-
+初始化后的扩展点是AOP的应用
 
 
 
@@ -1758,29 +1795,41 @@ xml方式在`obtainFreshBeanFactory`做完了
 在bean的注册过程中已经生成了BeanDefinition，这是通过读取xml（文件流）或者注解（ASM字节码技术）的方式生成的。
 ```
 
-合并BeanDefinition为MDB
+## 1、合并BeanDefinition为MDB
 
-加载beanClass到JVM
+## 2、加载beanClass到JVM
 
-实例化前-后置处理器   InstantiationAwareBeanPostProcessor#postProcessBeforeInstantiation
+## 3实例化前-后置处理器
 
-实例化
+InstantiationAwareBeanPostProcessor#postProcessBeforeInstantiation
 
-BeanDefinition-后置处理器  MergedBeanDefinitionPostProcessor#postProcessMergedBeanDefinition
+## 4、实例化
 
-实例化后-后置处理器   InstantiationAwareBeanPostProcessor#postProcessAfterInstantiation
+## 5、BeanDefinition-后置处理器
 
-填充属性
+MergedBeanDefinitionPostProcessor#postProcessMergedBeanDefinition
 
-填充属性后-后置处理器 InstantiationAwareBeanPostProcessor#postProcessProperties
+## 6、实例化后-后置处理器
 
-Aware回调执行
+InstantiationAwareBeanPostProcessor#postProcessAfterInstantiation
 
-初始化前-后置处理器   AbstractAutowireCapableBeanFactory#applyBeanPostProcessorsBeforeInitialization
+## 7、填充属性
 
-初始化
+## 8、填充属性后-后置处理器
 
-初始化后-后置处理器 AbstractAutowireCapableBeanFactory#applyBeanPostProcessorsAfterInitialization
+InstantiationAwareBeanPostProcessor#postProcessProperties
+
+## 9、Aware回调执行
+
+## 10、初始化前-后置处理器
+
+AbstractAutowireCapableBeanFactory#applyBeanPostProcessorsBeforeInitialization
+
+## 11、初始化
+
+## 12、初始化后-后置处理器
+
+AbstractAutowireCapableBeanFactory#applyBeanPostProcessorsAfterInitialization
 
 
 
@@ -2144,6 +2193,16 @@ if (containsSingleton(beanName)) {
 
 
 # 扩展点-BeanPostProcessor
+
+## 精髓
+
+扩展点是每个bean实例化的时候都会调用的公共点，如果不加以控制就是切面操作，但是执行的是已经实例化好的BeanPostProcessor实现类对象。
+
+这里会疑问为什么BeanPostProcessor实现类的创建过程中不是按照顺序来执行的，是因为，处理BeanPostProcessor是通过for循环所有的BeanPostProcessor实例，然后再分别调用不同的扩展点的，当本身就是BeanPostProcessor创建时，不会找到自己的实例，所以整个BeanPostProcessor实例化过程中的扩展点都不会执行，直到被创建出来后，下一个bean实例化时就会带上这个BeanPostProcessor的扩展点
+
+
+
+
 
 第三次调用：AutowiredAnnotationBeanPostProcessor也是MergedBeanDefinitionPostProcessor
 
