@@ -1931,6 +1931,8 @@ if (mbd.getResolvedAutowireMode() == AUTOWIRE_BY_NAME || mbd.getResolvedAutowire
 
 ### 源码-@Autowired&@Value
 
+[分析原理](springIOC.assets/@Autowired & @Value.png)
+
 分析，注解方式的自动注入就是一个插件，利用的就是BeanPostProcessor这个扩展点，这里的实现类是org.springframework.beans.factory.annotation.AutowiredAnnotationBeanPostProcessor
 
 ![image-20201019132825411](springIOC.assets/image-20201019132825411.png)
@@ -2068,6 +2070,377 @@ setter方法参数
 属性
 
 构造器
+
+
+
+## 详解resolveDependency
+
+org.springframework.beans.factory.support.DefaultListableBeanFactory#resolveDependency
+
+
+
+### 1、从属性填充后-后置处理器中开始
+
+org.springframework.beans.factory.config.InstantiationAwareBeanPostProcessor#postProcessProperties
+
+### 2、走到Autowired的后置处理器中
+
+org.springframework.beans.factory.annotation.AutowiredAnnotationBeanPostProcessor #postProcessProperties
+
+```java
+@Override
+public PropertyValues postProcessProperties(PropertyValues pvs, Object bean, String beanName) {
+   //找注入点  找到所有的注入点包括父类的
+   InjectionMetadata metadata = findAutowiringMetadata(beanName, bean.getClass(), pvs);
+   try {
+      //开始处理注入
+      metadata.inject(bean, beanName, pvs);
+   }
+   catch (BeanCreationException ex) {
+      throw ex;
+   }
+   catch (Throwable ex) {
+      throw new BeanCreationException(beanName, "Injection of autowired dependencies failed", ex);
+   }
+   return pvs;
+}
+```
+
+### 3、再找一次注入点，并返回所有注入点
+
+org.springframework.beans.factory.annotation.AutowiredAnnotationBeanPostProcessor #findAutowiringMetadata   找注入点--其实在之前就找过
+
+这里先从缓存 injectionMetadataCache 取 InjectionMetadata（注入点） 没有取到就开始构建
+
+3.1、缓存没有，构建注入点  ---这里是能找到 的因为在BeanDefinition后置处理的时候就往缓存中存储了，这里离只是取出来
+
+就是通过反射查询属性上面是否存在@Autowired或@Value注解  存在即返回  @Autowired优先，如果存在Autowired返回的点中只保存了Autowired的，不存在才保存@Value
+
+org.springframework.beans.factory.annotation.AutowiredAnnotationBeanPostProcessor #buildAutowiringMetadata
+
+先从属性中找注入点
+
+```java
+final List<InjectionMetadata.InjectedElement> currElements = new ArrayList<>();
+// 通过反射从 targetClass 的 field 方法中去找 @Autowired或@Value
+ReflectionUtils.doWithLocalFields(targetClass, field -> {
+   // 是否存在 @Autowired或@Value
+   AnnotationAttributes ann = findAutowiredAnnotation(field);
+   if (ann != null) {
+      if (Modifier.isStatic(field.getModifiers())) {
+         if (logger.isInfoEnabled()) {
+            logger.info("Autowired annotation is not supported on static fields: " + field);
+         }
+         return;
+      }
+      //required 为true表示这个依赖必须有不然就在后续依赖注入的时候就报错
+      boolean required = determineRequiredStatus(ann);
+      currElements.add(new AutowiredFieldElement(field, required));
+   }
+});
+```
+
+方法中找的和spring最早的byType一样
+
+```java
+// 通过反射从 targetClass的method中去找 @Autowired或@Value
+ReflectionUtils.doWithLocalMethods(targetClass, method -> {
+   Method bridgedMethod = BridgeMethodResolver.findBridgedMethod(method);
+   if (!BridgeMethodResolver.isVisibilityBridgeMethodPair(method, bridgedMethod)) {
+      return;
+   }
+   AnnotationAttributes ann = findAutowiredAnnotation(bridgedMethod);
+   if (ann != null && method.equals(ClassUtils.getMostSpecificMethod(method, clazz))) {
+      if (Modifier.isStatic(method.getModifiers())) {
+         if (logger.isInfoEnabled()) {
+            logger.info("Autowired annotation is not supported on static methods: " + method);
+         }
+         return;
+      }
+      if (method.getParameterCount() == 0) {
+         if (logger.isInfoEnabled()) {
+            logger.info("Autowired annotation should only be used on methods with parameters: " +
+                  method);
+         }
+      }
+      boolean required = determineRequiredStatus(ann);
+      PropertyDescriptor pd = BeanUtils.findPropertyForMethod(bridgedMethod, clazz);
+      currElements.add(new AutowiredMethodElement(method, required, pd));
+   }
+});
+```
+
+
+
+### 4、开始注入
+
+按照当前创建的beanName下的所有注入点开始注入
+
+org.springframework.beans.factory.annotation.InjectionMetadata#inject
+
+```java
+public void inject(Object target, @Nullable String beanName, @Nullable PropertyValues pvs) throws Throwable {
+   Collection<InjectedElement> checkedElements = this.checkedElements;
+   Collection<InjectedElement> elementsToIterate =
+         (checkedElements != null ? checkedElements : this.injectedElements);
+   if (!elementsToIterate.isEmpty()) {
+       //这里是所有注入点遍历
+      for (InjectedElement element : elementsToIterate) {
+         if (logger.isTraceEnabled()) {
+            logger.trace("Processing injected element of bean '" + beanName + "': " + element);
+         }
+         // element注入的属性
+         
+         element.inject(target, beanName, pvs);
+      }
+   }
+}
+```
+
+org.springframework.beans.factory.annotation.AutowiredAnnotationBeanPostProcessor .AutowiredFieldElement#inject
+
+### 5、属性注入
+
+org.springframework.beans.factory.annotation.AutowiredAnnotationBeanPostProcessor.
+
+==AutowiredFieldElement#inject==
+
+```java
+// 返回属性值  依赖的对象实例
+value = beanFactory.resolveDependency(desc, beanName, autowiredBeanNames, typeConverter);
+
+//反射注入
+ReflectionUtils.makeAccessible(field);
+// 通过反射设置属性值
+field.set(bean, value);
+```
+
+### 6、筛选并创建依赖实例
+
+org.springframework.beans.factory.support.DefaultListableBeanFactory#resolveDependency
+
+```java
+//1、先 判断属性的类型  Optional   ObjectFactory   其它的
+if (Optional.class == descriptor.getDependencyType()) {
+    return createOptionalDependency(descriptor, requestingBeanName);
+}
+else if (ObjectFactory.class == descriptor.getDependencyType() ||
+         ObjectProvider.class == descriptor.getDependencyType()) {
+    // 在org.springframework.beans.factory.support.DefaultListableBeanFactory.DependencyObjectProvider.getObject()
+    //这里调用了 createOptionalDependency方法
+    return new DependencyObjectProvider(descriptor, requestingBeanName);
+}
+else if (javaxInjectProviderClass == descriptor.getDependencyType()) {
+    return new Jsr330Factory().createDependencyProvider(descriptor, requestingBeanName);
+}
+else {
+    //2、 判断 是否是懒加载 @Lazy  是：返回代理对象  当代理对象被调用，即属性被使用的时候才会去创建被注入的对象
+    Object result = getAutowireCandidateResolver().getLazyResolutionProxyIfNecessary(
+        descriptor, requestingBeanName);
+    if (result == null) {
+        //3、 开始后续的筛选
+        result = doResolveDependency(descriptor, requestingBeanName, autowiredBeanNames, typeConverter);
+    }
+    return result;
+}
+```
+
+### 6.1 DependencyDescriptor是Optional
+
+org.springframework.beans.factory.support.DefaultListableBeanFactory#createOptionalDependency
+
+==调后序的doResolveDependency方法 继续筛选出一个bean 然后封装到Optional中==
+
+这里没有延迟加载
+
+### 6.2 DependencyDescriptor是ObjectFactory
+
+org.springframework.beans.factory.support.DefaultListableBeanFactory.DependencyObjectProvider
+
+这里的getObject()  方法调用了Optional 的  createOptionalDependency方法完成后序
+
+这里相当于延迟加载，因为先是返回的一个DependencyObjectProvider对象，只有当调用getObject的时候才会调用Optional 的  createOptionalDependency方法完成后序
+
+
+
+### 6.3 是否延迟加载
+
+懒加载的==直接返回一个代理对象==
+
+```java
+//2、 判断 是否是懒加载 @Lazy  是：返回代理对象  当代理对象被调用，即属性被使用的时候才会去创建被注入的对象
+Object result = getAutowireCandidateResolver().getLazyResolutionProxyIfNecessary(
+      descriptor, requestingBeanName);
+if (result == null) {
+   //3、 开始后续的筛选
+   result = doResolveDependency(descriptor, requestingBeanName, autowiredBeanNames, typeConverter);
+}
+return result;
+```
+
+### 7、doResolveDependency 筛选
+
+org.springframework.beans.factory.support.DefaultListableBeanFactory#doResolveDependency
+
+### 7.1 是否存在@Value
+
+存在@value  ==直接通过byName的方式返回依赖对象==
+
+```java
+// 4、 判断是否有@Value注解 有就返回注解内容并解析，就不会再往下走了
+Object value = getAutowireCandidateResolver().getSuggestedValue(descriptor);
+if (value != null) {
+   // 注解的内容是字符串
+   if (value instanceof String) {
+      String strVal = resolveEmbeddedValue((String) value);
+      //从合并的MBD中获取被依赖的BeanDefinition
+      BeanDefinition bd = (beanName != null && containsBean(beanName) ?
+            getMergedBeanDefinition(beanName) : null);
+      //根据字符串 通过byName 找到唯一的一个bean对象返回
+      // 最终会调 org.springframework.beans.factory.support.AbstractBeanFactory.doResolveBeanClass获取bean
+      value = evaluateBeanDefinitionString(strVal, bd);
+   }
+   TypeConverter converter = (typeConverter != null ? typeConverter : getTypeConverter());
+   try {
+      // 有@Value就直接返回了，不会往下走了
+      return converter.convertIfNecessary(value, type, descriptor.getTypeDescriptor());
+   }
+   catch (UnsupportedOperationException ex) {
+      // A custom TypeConverter which does not support TypeDescriptor resolution...
+      return (descriptor.getField() != null ?
+            converter.convertIfNecessary(value, type, descriptor.getField()) :
+            converter.convertIfNecessary(value, type, descriptor.getMethodParameter()));
+   }
+}
+```
+
+### 7.2  multipleBeans--数组-Map-集合
+
+```java
+// 5、判断 被解析的类型是否是 数组 、 Collection  、 Map  通过byType查到所有的bean返回
+Object multipleBeans = resolveMultipleBeans(descriptor, beanName, autowiredBeanNames, typeConverter);
+if (multipleBeans != null) {
+   return multipleBeans;
+}
+```
+
+resolveMultipleBeans这里直接调用下面的byType方法获取所有符合type类型的实例化的bean，注入到对应的容器中
+
+### 7.3  byType
+
+这里获取了所有符合类型的bean（这个bean可能没有实例化，只是个class），如果没有获取到就 抛异常了
+
+```java
+// 6、byType 查找自动装配的bean
+//返回的是一个Map，表示会根据type去找bean，
+// map的key是beanName value是bean的class对象（注意这里的class对象是BeanDefinition中的beanClass;/*这里为什么是object，因为可能是未创建的Class对象*/）
+//这里不负责实例化bean，因为这里找出来的是byType，不一定是最终需要 的 bean 等到最后找到唯一 的一个后再实例化依赖的bean
+Map<String, Object> matchingBeans = findAutowireCandidates(beanName, type, descriptor);
+if (matchingBeans.isEmpty()) {
+   if (isRequired(descriptor)) {
+      raiseNoMatchingBeanFound(type, descriptor.getResolvableType(), descriptor);
+   }
+   return null;
+}
+```
+
+==org.springframework.beans.factory.support.DefaultListableBeanFactory#findAutowireCandidates==
+
+==这个关键方法==
+
+1. 找出BeanFactory中类型为type的所有的Bean的名字，注意是名字，而不是Bean对象，因为我们可以根据BeanDefinition就能判断和当前type是不是匹配
+2. 把resolvableDependencies中key为type的对象找出来并添加到result中
+3. 遍历根据type找出的beanName，判断当前beanName对应的Bean是不是能够被自动注入
+4. 先判断beanName对应的BeanDefinition中的autowireCandidate属性，如果为false，表示不能用来进行自动注入，如果为true则继续进行判断
+5. 判断当前type是不是泛型，如果是泛型是会把容器中所有的beanName找出来的，如果是这种情况，那么在这一步中就要获取到泛型的真正类型，然后进行匹配，如果当前beanName和当前泛型对应的真实类型匹配，那么则继续判断
+6. 如果当前DependencyDescriptor上存在@Qualifier注解，那么则要判断当前beanName上是否定义了Qualifier，并且是否和当前DependencyDescriptor上的Qualifier相等，相等则匹配
+7. 经过上述验证之后，当前beanName才能成为一个可注入的，添加到result中
+
+
+
+### 7.4 byType返回多个
+
+通过byName的方式决定最终一个beanName，然后拿着这个beanName去matchingBeans（byType返回Map）中得到bean（也是有可能是Class的）
+
+```java
+if (matchingBeans.size() > 1) {
+   // 确定自动装配的beanName
+   //7、 byType结果大有1个  byName来决定最终的一个Bean
+   autowiredBeanName = determineAutowireCandidate(matchingBeans, descriptor);
+   if (autowiredBeanName == null) {
+      //isRequired是默认为true的 就是必须要有依赖存在的  也可以配置
+      if (isRequired(descriptor) || !indicatesMultipleBeans(type)) {
+         return descriptor.resolveNotUnique(descriptor.getResolvableType(), matchingBeans);
+      }
+      else {
+         // In case of an optional Collection/Map, silently ignore a non-unique case:
+         // possibly it was meant to be an empty collection of multiple regular beans
+         // (before 4.3 in particular when we didn't even look for collection beans).
+         return null;
+      }
+   }
+   instanceCandidate = matchingBeans.get(autowiredBeanName);
+}
+```
+
+### 7.4.1 byName来决定最终的
+
+org.springframework.beans.factory.support.DefaultListableBeanFactory#determineAutowireCandidate
+
+### 7.4.1.1  @primary
+
+```java 
+// 优先获取@primary修饰的  有多个@primary 直接抛异常  返回的是BeanName
+String primaryCandidate = determinePrimaryCandidate(candidates, requiredType);
+if (primaryCandidate != null) {
+   return primaryCandidate;
+}
+```
+
+### 7.4.1.2  @priority
+
+```java 
+// 使用了@priority 修饰的  越小的值优先级越高  有相同的优先级就报错 返回的也是beanName
+String priorityCandidate = determineHighestPriorityCandidate(candidates, requiredType);
+if (priorityCandidate != null) {
+   return priorityCandidate;
+}
+```
+
+### 7.4.1.3  找到和属性名一致的BeanName
+
+```java
+// Fallback
+      for (Map.Entry<String, Object> entry : candidates.entrySet()) {
+         String candidateName = entry.getKey();
+         Object beanInstance = entry.getValue();
+         if ((beanInstance != null && this.resolvableDependencies.containsValue(beanInstance)) ||
+//             判断属性名是否一致
+               matchesBeanName(candidateName, descriptor.getDependencyName())) {
+            return candidateName;
+         }
+      }
+```
+
+### 7.5 byType返回一个
+
+直接就是这一个对象了
+
+### 7.6  结果是class就实例化依赖Bean
+
+### 7.7  判断isRequired
+
+### Spring中的Qualifier应用
+
+
+
+
+
+
+
+
+
+
 
 
 
