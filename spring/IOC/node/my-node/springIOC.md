@@ -1829,6 +1829,8 @@ AbstractAutowireCapableBeanFactory#applyBeanPostProcessorsBeforeInitialization
 
 ## 12、初始化后-后置处理器
 
+## 13、Bean的销毁
+
 AbstractAutowireCapableBeanFactory#applyBeanPostProcessorsAfterInitialization
 
 
@@ -1838,6 +1840,8 @@ AbstractAutowireCapableBeanFactory#applyBeanPostProcessorsAfterInitialization
 
 
 # 依赖注入
+
+2020-10-18 周日 20:00-22:00
 
 ## 分类
 
@@ -1855,6 +1859,8 @@ byType、byName、constructor、no、default
 
 @Autowired、@Value
 
+@Resource(这个是jdk的注解，先从另一个jvm的容器中获取，没有就byName，没有就走@Autowired的逻辑)
+
 
 
 按照其他维度也可以说成3类：byType、byName、constructor
@@ -1863,7 +1869,7 @@ byType、byName、constructor、no、default
 
 ## 1、手动注入
 
-setter方法、构造方法
+setter方法、构造方法    ==set方法或者构造是必须的==
 
 ![image-20201019104224066](springIOC.assets/image-20201019104224066.png)
 
@@ -1873,15 +1879,17 @@ setter方法、构造方法
 
 ## ①xml中的自动注入  
 
-setter方法、构造方法
+setter方法、构造方法 ==set方法或者构造是必须的==
 
 ![image-20201019104957798](springIOC.assets/image-20201019104957798.png)
 
-setter方法 ：byType和byName 的原理
+这里的本质==不是说xml才有byType和byName==，是BeanDefinition的一个属性autowireMode ，在使用@Component的时候这个属性是`private int autowireMode = AUTOWIRE_NO;`所以不会执行byName和byType的逻辑，像@Bean上就可以指定byName和byType
+
+setter方法 ：byType和byName 的原理，所以==即使没有属性，只要有set方法，set方法就可能被调用==
 
 1. 先找出所有的setter方法，拿到入参类型（byType）和setter方法名（byName【setAge-->age】）
 2. 将配置的beanName对应的bean注入setter方法 的入参中
-3. 然后通过**反射调用**setter方法
+3. 然后通过**反射调用setter方法**
 
 构造方法：constructor是使用构造
 
@@ -1913,9 +1921,153 @@ if (mbd.getResolvedAutowireMode() == AUTOWIRE_BY_NAME || mbd.getResolvedAutowire
       // byType
       autowireByType(beanName, mbd, bw, newPvs);
    }
+    //这个就是最终找到的唯一 的 依赖bean
    pvs = newPvs;
 }
 ```
+
+#### 1、找到注入点,byName&byType
+
+==byName是找到所有的set方法的方法名==（这里的方法名是去除了set字符的setAge--age）
+
+==byType是找到所有的set方法的入参的类型==(setAge(Age otherName) ---  age--Age类型) 这里要求参数只能一个，多了注入不了，@Autowired的允许多个参数，而且不需要是set方法，任何方法都行
+
+![image-20201026160226597](springIOC.assets/image-20201026160226597.png)
+
+![image-20201026160427037](springIOC.assets/image-20201026160427037.png)
+
+org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory #unsatisfiedNonSimpleProperties
+
+org.springframework.beans.BeanWrapper#getPropertyDescriptors
+
+java.beans.Introspector.getTargetPropertyInfo()  底层通过jdk的代码获取属性描述
+
+一定是通过set方法获取注入点
+
+```java
+static final String ADD_PREFIX = "add";
+static final String REMOVE_PREFIX = "remove";
+static final String GET_PREFIX = "get";
+static final String SET_PREFIX = "set";
+static final String IS_PREFIX = "is";
+```
+
+#### 2.1、byName获取到唯一的依赖
+
+org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory#autowireByName
+
+先通过1的unsatisfiedNonSimpleProperties方法找到了所有set方法的属性
+
+然后遍历找到的属性名（这里的属性名其实是set方法名），使用getBean方法 直接获取唯一的依赖，**实例化了的**
+
+```java
+protected void autowireByName(
+      String beanName, AbstractBeanDefinition mbd, BeanWrapper bw, MutablePropertyValues pvs) {
+
+   //找到所有set方法的属性  这里有规则属性名和setter方法的方法名需要匹配
+   String[] propertyNames = unsatisfiedNonSimpleProperties(mbd, bw);
+   for (String propertyName : propertyNames) {
+       //这个找出来的名字对应有bean就继续，没有就提示
+      if (containsBean(propertyName)) {
+         // 根据属性名找唯一的依赖bean
+         Object bean = getBean(propertyName);
+         pvs.add(propertyName, bean);
+         registerDependentBean(propertyName, beanName);
+         if (logger.isTraceEnabled()) {
+            logger.trace("Added autowiring by name from bean name '" + beanName +
+                  "' via property '" + propertyName + "' to bean named '" + propertyName + "'");
+         }
+      }
+      else {
+         if (logger.isTraceEnabled()) {
+            logger.trace("Not autowiring property '" + propertyName + "' of bean '" + beanName +
+                  "' by name: no matching bean found");
+         }
+      }
+   }
+}
+```
+
+#### 2.2、byType获取唯一的依赖
+
+org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory#autowireByType
+
+先通过1的unsatisfiedNonSimpleProperties方法找到了所有set方法的属，然后通过解析器进行byType解析，这里的方法和Autowired注解 的筛选方法一致，只是最后无法进行byName，因为在创建属性描述的时候没有将set方法得到参数名放入parameterName中，导致最后byType选出多个 bean后无法进行ByName操作直接报错
+
+```java
+Caused by: org.springframework.beans.factory.NoUniqueBeanDefinitionException: No qualifying bean of type 'bat.ke.qq.com.bean.Binterface' available: expected single matching bean but found 2: bimpl1,bimpl2
+	at org.springframework.beans.factory.config.DependencyDescriptor.resolveNotUnique(DependencyDescriptor.java:221)
+	at org.springframework.beans.factory.support.DefaultListableBeanFactory.doResolveDependency(DefaultListableBeanFactory.java:1257)
+	at org.springframework.beans.factory.support.DefaultListableBeanFactory.resolveDependency(DefaultListableBeanFactory.java:1183)
+	at org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory.autowireByType(AbstractAutowireCapableBeanFactory.java:1599)
+```
+
+```java
+protected void autowireByType(
+      String beanName, AbstractBeanDefinition mbd, BeanWrapper bw, MutablePropertyValues pvs) {
+
+   //类型转化器，当类型不匹配的时候就开始调用类型转化器
+   TypeConverter converter = getCustomTypeConverter();
+   if (converter == null) {
+      converter = bw;
+   }
+
+   Set<String> autowiredBeanNames = new LinkedHashSet<>(4);
+
+   // 同样是找到set方法对应的属性
+   String[] propertyNames = unsatisfiedNonSimpleProperties(mbd, bw);
+   for (String propertyName : propertyNames) {
+      try {
+         //setter方法中的属性描述  参考unsatisfiedNonSimpleProperties里的
+         PropertyDescriptor pd = bw.getPropertyDescriptor(propertyName);
+         // Don't try autowiring by type for type Object: never makes sense,
+         // even if it technically is a unsatisfied, non-simple property.
+         // pd.getPropertyType()是获取的set方法参数的类型  这里的参数只允许一个，byType就是通过参数类型来的
+         //参数类型为Object是没有意义的
+         if (Object.class != pd.getPropertyType()) {
+            //这里是获取参数信息  WriteMethod代表set方法
+            MethodParameter methodParam = BeanUtils.getWriteMethodParameter(pd);
+            // Do not allow eager init for type matching in case of a prioritized post-processor.
+            boolean eager = !PriorityOrdered.class.isInstance(bw.getWrappedInstance());
+            //根据类型找到bean  这就是byType
+            DependencyDescriptor desc = new AutowireByTypeDependencyDescriptor(methodParam, eager);
+            //这里走到了Autowired的逻辑里了，就是byType的逻辑，重点是desc描述中没有将参数的name放进去，
+            // 导致byType出多个bean的时候无法byName，直接报错
+            Object autowiredArgument = resolveDependency(desc, beanName, autowiredBeanNames, converter);
+            if (autowiredArgument != null) {
+               pvs.add(propertyName, autowiredArgument);
+            }
+            for (String autowiredBeanName : autowiredBeanNames) {
+               registerDependentBean(autowiredBeanName, beanName);
+               if (logger.isTraceEnabled()) {
+                  logger.trace("Autowiring by type from bean name '" + beanName + "' via property '" +
+                        propertyName + "' to bean named '" + autowiredBeanName + "'");
+               }
+            }
+            autowiredBeanNames.clear();
+         }
+      }
+      catch (BeansException ex) {
+         throw new UnsatisfiedDependencyException(mbd.getResourceDescription(), beanName, propertyName, ex);
+      }
+   }
+}
+```
+
+org.springframework.beans.factory.support.**DefaultListableBeanFactory#resolveDependency**
+
+
+
+#### 3、反射调用set方法，入参就是依赖bean
+
+```java
+if (pvs != null) {
+   // propertyValues属性填充 ，包括AutowireMode方式注入的bean
+   applyPropertyValues(beanName, mbd, bw, pvs);
+}
+```
+
+
 
 ## ②  @Autowired的注解
 
@@ -1923,7 +2075,7 @@ if (mbd.getResolvedAutowireMode() == AUTOWIRE_BY_NAME || mbd.getResolvedAutowire
 
 ==后置处理器的一种应用==
 
-普通方法
+普通方法（方法参数可以多个，不一定是set方法，比byType更优）
 
 构造方法
 
@@ -1988,6 +2140,16 @@ org.springframework.beans.factory.annotation.AutowiredAnnotationBeanPostProcesso
 
 org.springframework.beans.factory.annotation.AutowiredAnnotationBeanPostProcessor #buildAutowiringMetadata
 
+#### 注入点的条件
+
+是否有@Autowired @Value @Inject中的任意一个
+
+并且 不是静态方法
+
+并且 required属性设置
+
+![image-20201026170514083](springIOC.assets/image-20201026170514083.png)
+
 
 
 #### 3、注入的逻辑
@@ -2049,7 +2211,44 @@ public PropertyValues postProcessProperties(PropertyValues pvs, Object bean, Str
 }
 ```
 
+在方法上，同样的处理方式，只是在最后会通过反射去**==调用注入点上的方法==**
 
+
+
+### @Resource
+
+这个使用的是org.springframework.context.annotation.CommonAnnotationBeanPostProcessor
+
+查找注入点和@Autowired一样org.springframework.context.annotation.CommonAnnotationBeanPostProcessor#postProcessMergedBeanDefinition
+
+从BeanFactory中找，这个BeanFactory不是spring容器的，是jvm的。
+
+判断参数只能有一个，否则就抛异常
+
+org.springframework.context.annotation.CommonAnnotationBeanPostProcessor#buildResourceMetadata
+
+
+
+进行注入的地方也是和@Autowired一样的org.springframework.context.annotation.CommonAnnotationBeanPostProcessor#postProcessProperties
+
+org.springframework.beans.factory.annotation.InjectionMetadata#inject
+
+org.springframework.beans.factory.annotation.InjectionMetadata.InjectedElement#inject
+
+org.springframework.context.annotation.CommonAnnotationBeanPostProcessor.ResourceElement #getResourceToInject
+
+org.springframework.context.annotation.CommonAnnotationBeanPostProcessor#getResource
+
+org.springframework.context.annotation.CommonAnnotationBeanPostProcessor#autowireResource
+
+
+
+![@Resource注解底层工作原理.png](springIOC.assets/1603349673878-2fb09321-8e63-4a5e-a362-f3edb833631c.png)
+
+对于@Resource：
+
+1. 如果@Resource注解中指定了name属性，那么则只会根据name属性的值去找bean，如果找不到则报错
+2. 如果@Resource注解没有指定name属性，那么会先判断当前注入点名字（属性名字或方法参数名字）是不是存在Bean，如果存在，则直接根据注入点名字取获取bean，如果不存在，则会走@Autowired注解的逻辑，会根据注入点类型去找Bean
 
 ## 依赖注入重要组件
 
@@ -2057,21 +2256,46 @@ public PropertyValues postProcessProperties(PropertyValues pvs, Object bean, Str
 
 不管是xml的自动注入还是注解的，都会使用
 
+#### DependencyDescriptor
+
+xml中的byType
+
 ```java
 DependencyDescriptor desc = new AutowireByTypeDependencyDescriptor(methodParam, eager);
 //这里就是解决依赖的方法，传进来的可以是依赖描述 DependencyDescriptor
 Object autowiredArgument = resolveDependency(desc, beanName, autowiredBeanNames, converter);
 ```
 
-DependencyDescriptor  依赖描述有 ：
+@Autowired中的method
 
-setter方法参数
+```java
+DependencyDescriptor[] descriptors = new DependencyDescriptor[paramTypes.length];
+```
 
-属性
+@Autowired中的field
 
-构造器
+```java
+DependencyDescriptor desc = new DependencyDescriptor(field, this.required);
+```
 
 
+
+#### InjectionMetadata 注入点的信息
+
+@Autowired中的注入点
+
+```java
+@Nullable
+//存储了注入点
+private volatile Set<InjectedElement> checkedElements;
+```
+
+注解中找注入点和存储注入点
+
+```java
+//找注入点  找到所有的注入点包括父类的
+InjectionMetadata metadata = findAutowiringMetadata(beanName, bean.getClass(), pvs);
+```
 
 ## 详解resolveDependency
 
@@ -2081,9 +2305,13 @@ org.springframework.beans.factory.support.DefaultListableBeanFactory#resolveDepe
 
 ### 1、从属性填充后-后置处理器中开始
 
+这里找注入点
+
 org.springframework.beans.factory.config.InstantiationAwareBeanPostProcessor#postProcessProperties
 
 ### 2、走到Autowired的后置处理器中
+
+这里处理注入
 
 org.springframework.beans.factory.annotation.AutowiredAnnotationBeanPostProcessor #postProcessProperties
 
@@ -2278,9 +2506,11 @@ if (result == null) {
 return result;
 ```
 
-### 7、doResolveDependency 筛选
+### 7、doResolveDependency 6次筛选
 
 org.springframework.beans.factory.support.DefaultListableBeanFactory#doResolveDependency
+
+
 
 ### 7.1 是否存在@Value
 
@@ -2356,7 +2586,59 @@ if (matchingBeans.isEmpty()) {
 6. 如果当前DependencyDescriptor上存在@Qualifier注解，那么则要判断当前beanName上是否定义了Qualifier，并且是否和当前DependencyDescriptor上的Qualifier相等，相等则匹配
 7. 经过上述验证之后，当前beanName才能成为一个可注入的，添加到result中
 
+org.springframework.beans.factory.support.DefaultListableBeanFactory#findAutowireCandidates
 
+这里的筛选逻辑在：
+
+```java
+for (String candidate : candidateNames) {
+   if (!isSelfReference(beanName, candidate) && isAutowireCandidate(candidate, descriptor)) {
+      // 获取到依赖对象 key(属性)--value（bean）方式添加到 map
+      addCandidateEntry(result, candidate, descriptor, requiredType);
+   }
+}
+```
+
+org.springframework.beans.factory.support.DefaultListableBeanFactory#isAutowireCandidate
+
+```java 
+@Override
+public boolean isAutowireCandidate(String beanName, DependencyDescriptor descriptor)
+      throws NoSuchBeanDefinitionException {
+
+   return isAutowireCandidate(beanName, descriptor, getAutowireCandidateResolver());
+}
+```
+
+```java
+AutowireCandidateResolver resolver = ContextAnnotationAutowireCandidateResolver
+```
+
+这里有个解析器
+
+![image-20201026110951299](springIOC.assets/image-20201026110951299.png)
+
+所以是会经过三层筛选的----Simple--Generic---Qualifier
+
+SimpleAutowireCandidateResolver  ： 可以配置当前bean为非候选的bean    xml中也可以配置
+
+```java
+<bean autowire-candidate="false" class="bat.ke.qq.com.bean.MyBeanFactoryPostProcessor" name="myBeanFactoryPostProcessor"/>
+```
+
+
+
+GenericTypeAwareAutowireCandidateResolver：匹配参数类型是否一致    泛型的类型也是这里处理的
+
+
+
+QualifierAnnotationAutowireCandidateResolver：判断是否Qualifier  是否匹配
+
+
+
+
+
+![依赖注入流程.png](springIOC.assets/1603376868612-1e1c3210-a807-45e1-bfd6-d6251ab80931.png)
 
 ### 7.4 byType返回多个
 
@@ -2436,13 +2718,98 @@ if (priorityCandidate != null) {
 
 
 
+## 自己注入自己
+
+按照正常逻辑来说，对于注入点：
+
+```
+@Autowired
+private UserService userService;
+```
+
+会先根据UserService类型去找Bean，找到两个，然后根据属性名字“userService”找到一个beanName为userService的Bean，但是我们直接运行Spring，会发现注入的是“userService1”的那个Bean。
+
+
+
+这是因为Spring中进行了控制，尽量“**自己不注入自己**”。
+
+源码在org.springframework.beans.factory.support.DefaultListableBeanFactory#findAutowireCandidates
+
+中
+
+```java
+!isSelfReference(beanName, candidate)
+```
+
+
+
+# Bean的销毁过程
+
+2020-10-22 周四 20:00-22:00  1:29:00
+
+这里也使用了后置处理器 org.springframework.context.annotation.CommonAnnotationBeanPostProcessor
+
+org.springframework.beans.factory.annotation.InitDestroyAnnotationBeanPostProcessor #postProcessBeforeInitialization----初始化前后置处理器中  执行@PostConstruct 方法
+
+org.springframework.beans.factory.annotation.InitDestroyAnnotationBeanPostProcessor #postProcessBeforeDestruction-----销毁后置处理器调用 执行PreDestroy方法回调
+
+![image-20201026180941231](springIOC.assets/image-20201026180941231.png)
+
+销毁的后置处理器在哪执行的？
+
+org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory#doCreateBean
+
+```java
+// Register bean as disposable.
+try {
+   // 将bean注册为可以销毁   DestructionAwareBeanPostProcessor bean的销毁后置处理器
+   // 第九次调用后置处理器  这里先注册需要执行销毁方法的bean
+   registerDisposableBeanIfNecessary(beanName, bean, mbd);
+}
+catch (BeanDefinitionValidationException ex) {
+   throw new BeanCreationException(
+         mbd.getResourceDescription(), beanName, "Invalid destruction signature", ex);
+}
+```
+
+org.springframework.beans.factory.support.AbstractBeanFactory#registerDisposableBeanIfNecessary
+
+这里筛选出需要执行销毁方法的bean，使用了后置处理器的方法org.springframework.beans.factory.annotation.InitDestroyAnnotationBeanPostProcessor #requiresDestruction
+
+```java
+@Override
+public boolean requiresDestruction(Object bean) {
+    //判断这个bean是否有@PreDestroy注解
+   return findLifecycleMetadata(bean.getClass()).hasDestroyMethods();
+}
+```
 
 
 
 
 
+### 1. 容器关闭
+
+### 2. 发布ContextClosedEvent事件
+
+### 3. 调用LifecycleProcessor的onClose方法
+
+### 4. 销毁单例Bean
+
+1. 找出所有DisposableBean(实现了DisposableBean接口的Bean)
+2. 遍历每个DisposableBean
+3. 找出依赖了当前DisposableBean的其他Bean，将这些Bean从单例池中移除掉
+4. 调用DisposableBean的destroy()方法
+5. 找到当前DisposableBean所包含的inner beans，将这些Bean从单例池中移除掉 (inner bean参考https://docs.spring.io/spring-framework/docs/current/spring-framework-reference/core.html#beans-inner-beans)
+
+**
+**
+
+这里涉及到一个设计模式：**适配器模式**
 
 
+
+在销毁时，Spring会找出实现了DisposableBean接口的Bean。
 
 # 扩展点FactoryBean
 
