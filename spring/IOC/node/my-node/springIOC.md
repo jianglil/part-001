@@ -2747,15 +2747,55 @@ private UserService userService;
 
 2020-10-22 周四 20:00-22:00  1:29:00
 
-这里也使用了后置处理器 org.springframework.context.annotation.CommonAnnotationBeanPostProcessor
+销毁，手动applicationContext.close()
 
-org.springframework.beans.factory.annotation.InitDestroyAnnotationBeanPostProcessor #postProcessBeforeInitialization----初始化前后置处理器中  执行@PostConstruct 方法
+自动：jvm提供了一个钩子`((ClassPathXmlApplicationContext) context).registerShutdownHook();`
 
-org.springframework.beans.factory.annotation.InitDestroyAnnotationBeanPostProcessor #postProcessBeforeDestruction-----销毁后置处理器调用 执行PreDestroy方法回调
+销毁方法：①实现org.springframework.beans.factory.DisposableBean 重写destroy方法②`@PreDestroy`
+
+## 总结：
+
+CommonAnnotationBeanPostProcessor   extends     InitDestroyAnnotationBeanPostProcessor
 
 ![image-20201026180941231](springIOC.assets/image-20201026180941231.png)
 
-销毁的后置处理器在哪执行的？
+创建一个bean的时候（**doCreateBean**方法）在最后会利用后置处理器CommonAnnotationBeanPostProcessor的父类**InitDestroyAnnotationBeanPostProcessor**也是后置处理器，
+
+### 1、postProcessMergedBeanDefinition
+
+org.springframework.beans.factory.annotation.InitDestroyAnnotationBeanPostProcessor #postProcessMergedBeanDefinition
+
+利用生命周期中的BeanDefinition后置处理器postProcessMergedBeanDefinition方法来扫描出---**找`@PreDestroy`和`@PostConstruct`的注入点
+
+### 2、postProcessBeforeInitialization
+
+org.springframework.beans.factory.annotation.InitDestroyAnnotationBeanPostProcessor #postProcessBeforeInitialization
+
+利用生命周期中的初始化前调用 **执行`@PostConstruct` 方法**
+
+### 3、postProcessBeforeDestruction
+
+org.springframework.beans.factory.annotation.InitDestroyAnnotationBeanPostProcessor #postProcessBeforeDestruction
+
+利用生命周期中的销毁注册后置处理器  来**判断是否是销毁的注入点PreDestroy**   这里将bean上有
+
+①实现 DisposableBean接口 或 AutoCloseable接口 
+
+②BeanDefinition中有destroyMethodName方法
+
+③@PreDestroy注解
+
+都存储到容器  org.springframework.beans.factory.support.DefaultSingletonBeanRegistry#disposableBeans中
+
+### 4、在调用 容器的close方法  去销毁
+
+org.springframework.context.support.AbstractApplicationContext#close中遍历`disposableBeans` 去执行destroy方法（适配器）
+
+
+
+## @PreDestroy的注册
+
+这里将**@PreDestroy** 或者 **实现了 DisposableBean 接口**的 单例的  bean都注册到了`org.springframework.beans.factory.support.DefaultSingletonBeanRegistry#disposableBeans`属性上
 
 org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory#doCreateBean
 
@@ -2764,6 +2804,7 @@ org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory#doC
 try {
    // 将bean注册为可以销毁   DestructionAwareBeanPostProcessor bean的销毁后置处理器
    // 第九次调用后置处理器  这里先注册需要执行销毁方法的bean
+   //这里将@PreDestroy 或者 实现了 DisposableBean 接口的 单例的  bean都注册到了org.springframework.beans.factory.support.DefaultSingletonBeanRegistry#disposableBeans属性上
    registerDisposableBeanIfNecessary(beanName, bean, mbd);
 }
 catch (BeanDefinitionValidationException ex) {
@@ -2786,15 +2827,123 @@ public boolean requiresDestruction(Object bean) {
 
 
 
+## close()
 
+org.springframework.context.support.AbstractApplicationContext#close
+
+org.springframework.context.support.AbstractApplicationContext#doClose
 
 ### 1. 容器关闭
 
+
+
 ### 2. 发布ContextClosedEvent事件
+
+```java
+try {
+   // Publish shutdown event.
+   publishEvent(new ContextClosedEvent(this));
+}
+```
 
 ### 3. 调用LifecycleProcessor的onClose方法
 
 ### 4. 销毁单例Bean
+
+这里将之前注册到 `disposableBeans`容器中的bean都遍历执行对应的destroy方法
+
+```java
+destroyBeans();
+```
+
+org.springframework.context.support.AbstractApplicationContext#destroyBeans
+
+```java
+protected void destroyBeans() {
+   getBeanFactory().destroySingletons();
+}
+```
+
+org.springframework.beans.factory.support.DefaultListableBeanFactory#destroySingletons
+
+```java
+@Override
+public void destroySingletons() {
+   super.destroySingletons();
+   this.manualSingletonNames.clear();
+   clearByTypeCache();
+}
+```
+
+先走父类的
+
+org.springframework.beans.factory.support.DefaultSingletonBeanRegistry#destroySingletons
+
+org.springframework.beans.factory.support.DefaultSingletonBeanRegistry#destroySingleton
+
+org.springframework.beans.factory.support.DefaultSingletonBeanRegistry#destroyBean
+
+```java
+try {
+   //这里执行了实现disposableBeans容器中的 bean的destroy销毁方法
+   bean.destroy();
+}
+```
+
+org.springframework.beans.factory.support.DisposableBeanAdapter#destroy   适配器模式
+
+![image-20201027114145944](springIOC.assets/image-20201027114145944.png)
+
+```java
+@Override
+public void destroy() {
+   // 适配器模式
+   // 销毁bean前调用后置处理器  DestructionAwareBeanPostProcessor.postProcessBeforeDestruction
+
+   if (!CollectionUtils.isEmpty(this.beanPostProcessors)) {
+      for (DestructionAwareBeanPostProcessor processor : this.beanPostProcessors) {
+         // @PreDestroy
+         processor.postProcessBeforeDestruction(this.bean, this.beanName);
+      }
+   }
+
+   if (this.invokeDisposableBean) {
+      if (logger.isTraceEnabled()) {
+         logger.trace("Invoking destroy() on bean with name '" + this.beanName + "'");
+      }
+      try {
+         if (System.getSecurityManager() != null) {
+            AccessController.doPrivileged((PrivilegedExceptionAction<Object>) () -> {
+               ((DisposableBean) this.bean).destroy();
+               return null;
+            }, this.acc);
+         }
+         else {
+            // 实现 DisposableBean
+            ((DisposableBean) this.bean).destroy();
+         }
+      }
+      catch (Throwable ex) {
+      }
+   }
+
+   if (this.destroyMethod != null) {
+   }
+   else if (this.destroyMethodName != null) {
+    
+   }
+}
+```
+
+
+
+再走子类的
+
+org.springframework.beans.factory.support.DefaultListableBeanFactory#destroySingletons
+
+
+
+
 
 1. 找出所有DisposableBean(实现了DisposableBean接口的Bean)
 2. 遍历每个DisposableBean
@@ -2807,7 +2956,26 @@ public boolean requiresDestruction(Object bean) {
 
 这里涉及到一个设计模式：**适配器模式**
 
+org.springframework.beans.factory.support.AbstractBeanFactory#registerDisposableBeanIfNecessary
 
+```java
+if (mbd.isSingleton()) {
+				// Register a DisposableBean implementation that performs all destruction
+				// work for the given bean: DestructionAwareBeanPostProcessors,
+				// DisposableBean interface, custom destroy method.
+				// 把当前bean 注册到 disposableBeans 中
+				//然后容器在调用close方法的时候会从 disposableBeans 中找出来所有的bean开始执行bean的destroy方法
+
+				//适配器模式，将所有类型的销毁==
+				// （实现 DisposableBean接口 或 AutoCloseable接口 或  BeanDefinition中有destroyMethodName方法 或   @PreDestroy注解）  ---  分--总
+				// 都封装为一个适配器 DisposableBeanAdapter ，然后再调用close的时候，直接强转为 DisposableBean
+				// 调用destroy实际上调用的是子类 DisposableBeanAdapter 的destroy方法 ，在这个destroy 方法中再来分类执行      --- 总---分
+
+
+				registerDisposableBean(beanName,
+						new DisposableBeanAdapter(bean, beanName, mbd, getBeanPostProcessors(), acc));
+			}
+```
 
 在销毁时，Spring会找出实现了DisposableBean接口的Bean。
 
