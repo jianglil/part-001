@@ -289,7 +289,29 @@ public class MyBeanFactoryPostProcessor implements BeanFactoryPostProcessor {
 
 
 
-后置处理器？
+#### 四、使用context的直接手动注册
+
+context.registerBeanDefinition
+
+```java
+@Test
+public void testManualRegistryBeanDefinition() {
+    //这里一定要分开执行
+   AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext();
+   context.register(AppConfig.class);
+   context.registerBeanDefinition("manualRegistryBeanDefinition",
+         new RootBeanDefinition(A.class));
+   context.refresh();
+
+   System.out.println(context.getBean("manualRegistryBeanDefinition"));
+}
+```
+
+#### 五、注解方式
+
+@Component
+
+@Bean
 
 
 
@@ -533,35 +555,67 @@ AnnotatedGenericBeanDefinition abd = new AnnotatedGenericBeanDefinition(annotate
 
 org.springframework.context.support.
 
-**AbstractApplicationContext#invokeBeanFactoryPostProcessors**
+#### ①invokeBeanFactoryPostProcessors
 
-PostProcessorRegistrationDelegate#invokeBeanFactoryPostProcessors(ConfigurableListableBeanFactory, java.util.List<org.springframework.beans.factory.config.BeanFactoryPostProcessor>)
+org.springframework.context.support.AbstractApplicationContext#invokeBeanFactoryPostProcessors
 
 ```java
-// 保存本次要执行的BeanDefinitionRegistryPostProcessor   有序的容器
-List<BeanDefinitionRegistryPostProcessor> currentRegistryProcessors = new ArrayList<>();
+protected void invokeBeanFactoryPostProcessors(ConfigurableListableBeanFactory beanFactory) {
+   // getBeanFactoryPostProcessors(): 拿到当前应用上下文beanFactoryPostProcessors---这里拿到的是手动通过context.registerBeanPostProcessors()进来的
+   // 目前是拿不到任何 @Component配置的和系统自带（ConfigurationClassPostProcessor）的BeanFactoryPostProcessor
+   // 因为这里还没有扫描到任何bean，且 ConfigurationClassPostProcessor 这个还只是个BeanDefinitionName，没有注册进来
 
-//根据type获取容器中注册了的beanName  这里获取了 BeanDefinitionRegistryPostProcessor 类型的
-//在之前系统自带的5类中有个类继承了这个接口   ConfigurationClassPostProcessor
-String[] postProcessorNames =
-      beanFactory.getBeanNamesForType(BeanDefinitionRegistryPostProcessor.class, true, false);
-
-//下面按照优先级去加载   这里优先级使用的是  PriorityOrdered > Ordered > None
-for (String ppName : postProcessorNames) {
-				//判断是否实现了PriorityOrdered
-    if (beanFactory.isTypeMatch(ppName, PriorityOrdered.class)) {
-        // 获取 ConfigurationClassPostProcessor 实现了BeanDefinitionRegistryPostProcessor
-        currentRegistryProcessors.add(beanFactory.getBean(ppName, BeanDefinitionRegistryPostProcessor.class));  //这里有个getBean操作
-        processedBeans.add(ppName);
-    }
+   PostProcessorRegistrationDelegate.invokeBeanFactoryPostProcessors(beanFactory, getBeanFactoryPostProcessors());
+// 。。。。。。。。
+   }
 }
-//排序方法
-sortPostProcessors(currentRegistryProcessors, beanFactory);
+```
 
-// 会调用ConfigurationClassPostProcessor#postProcessBeanDefinitionRegistry 解析注解，注册bean
-invokeBeanDefinitionRegistryPostProcessors(currentRegistryProcessors, registry);
+#### ②invokeBeanFactoryPostProcessors
+
+org.springframework.context.support.PostProcessorRegistrationDelegate #invokeBeanFactoryPostProcessors
+
+```java
+/**
+* 先明确  BeanDefinitionRegistryPostProcessor extends BeanFactoryPostProcessor
+* 实现了BeanDefinitionRegistryPostProcessor 就会实现  BeanFactoryPostProcessor
+* 按照功能   BeanDefinitionRegistryPostProcessor 负责注册BeanDefinition
+* 			BeanFactoryPostProcessor负责修改注册后的BeanDefinition属性
+*
+* 	这里就按照这个功能区分为两大类，先执行注册 BeanDefinition 功能的，再执行修改 BeanDefinition 功能的
+*   然后每个大类里面有按照顺序执行：手动context.registry的  >   PriorityOrdered  >  	Ordered  >   剩下的其它
+*
+*   最后再考虑到注册功能的，注册的BeanDefinition有可能也是个  BeanDefinitionRegistryPostProcessor  ,最后再来一个循环递归统一处理
+*
+* */
 
 ```
+
+
+
+```txt
+
+一、BeanDefinitionRegistryPostProcessor 大类中的
+
+1、 手动context.registry 的 小类
+2、 PriorityOrdered 小类
+3、 Ordered 小类
+4、 其它类的  和  上面新增的
+5、6、7、8、手动context.registry的 > PriorityOrdered > Ordered > 剩下的其它和前面新增的 小类
+
+二、BeanFactoryPostProcessor 大类中的
+
+9、 手动context.registry的  并且 只实现了 BeanFactoryPostProcessor接口 的 小类
+10、PriorityOrdered 的  并且 只实现了 BeanFactoryPostProcessor接口 的 小类
+11、Ordered 的 并且 只实现了 BeanFactoryPostProcessor接口 的 小类
+12、普通的,其它情况 的 并且 只实现了 BeanFactoryPostProcessor接口 的 小类	 	 
+```
+
+
+
+
+
+
 
 #### 解析注解和注册bean的关键---方法入口
 
