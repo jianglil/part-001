@@ -313,6 +313,8 @@ public void testManualRegistryBeanDefinition() {
 
 @Bean
 
+@Import
+
 
 
 ### registerBeanDefinition
@@ -1431,7 +1433,7 @@ protected Object resolveBeforeInstantiation(String beanName, RootBeanDefinition 
 
 org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory#createBeanInstance
 
-推断构造---实例化都在这里
+推断构造---实例化都在这里  先推断构造方法再实例化  详细的见推断构造方法
 
 ## 十二、实例化
 
@@ -1859,6 +1861,8 @@ InstantiationAwareBeanPostProcessor#postProcessBeforeInstantiation
 
 ## 4、实例化
 
+实例化就是有一段推断构造方法的逻辑在，@Autowired的应用
+
 ## 5、BeanDefinition-后置处理器
 
 MergedBeanDefinitionPostProcessor#postProcessMergedBeanDefinition
@@ -1897,19 +1901,37 @@ AbstractAutowireCapableBeanFactory#applyBeanPostProcessorsAfterInitialization
 
 2020-10-18 周日 20:00-22:00
 
+## 本节==不讲构造方法注入==
+
+本节主要分析==属性的注入==和==非构造方法的注入==，对于构造方法的注入见推断构造方法
+
+
+
+
+
 ## 分类
 
-一、手动
+### 第一类手动
 
-set方法，构造方法
+在xml中定义的bean的子标签property或者constructor-arg    ==set方法或者构造是必须的==
 
-二、自动
+![image-20201019104224066](springIOC.assets/image-20201019104224066.png)
 
-1、xml中的
+在XML中手写的，**底层依赖的是setter方法、构造方法**
 
-byType、byName、constructor、no、default
+### 第二类自动
 
-2、注解中的
+#### 1、xml方式
+
+![image-20201019104957798](springIOC.assets/image-20201019104957798.png)
+
+5中类型：byType、byName、default、constructor、no
+
+下面有详解
+
+这种配置同样是需要**依赖于bean中定义了set方法或构造方法的**
+
+#### 2、注解方式
 
 @Autowired、@Value
 
@@ -1917,41 +1939,63 @@ byType、byName、constructor、no、default
 
 
 
+### 按照其他方式分类
+
 按照其他维度也可以说成3类：byType、byName、constructor
 
 
 
-## 1、手动注入
 
-setter方法、构造方法    ==set方法或者构造是必须的==
 
-![image-20201019104224066](springIOC.assets/image-20201019104224066.png)
+## 分析xml中的自动注入 
 
-在XML中手写的，底层依赖的是setter方法、构造方法
+### 基于setter方法、构造方法
 
-## 2、自动注入
+==set方法或者构造是必须的==
 
-## ①xml中的自动注入  
+不管是**属性注入**还是**方法注入**都是基于set方法 
 
-setter方法、构造方法 ==set方法或者构造是必须的==
+**属性注入也需要有对应的set方法**，方法注入就只能通过set方法注入，所以本质就是set方法，只要注入成功就是通过调用了set方法后，`this.field=param`进行注入的
+
+构造方法注入见推断构造方法章节
+
+### 注入类型
 
 ![image-20201019104957798](springIOC.assets/image-20201019104957798.png)
 
+#### byType和byName
+
 这里的本质==不是说xml才有byType和byName==，是BeanDefinition的一个属性autowireMode ，在使用@Component的时候这个属性是`private int autowireMode = AUTOWIRE_NO;`所以不会执行byName和byType的逻辑，像@Bean上就可以指定byName和byType
 
-setter方法 ：byType和byName 的原理，所以==即使没有属性，只要有set方法，set方法就可能被调用==
+byName原理
 
-1. 先找出所有的setter方法，拿到入参类型（byType）和setter方法名（byName【setAge-->age】）
+1、先找出所有的setter方法，拿到String beanName    ---->（【setAge-->age】）
+
+2、根据beanName直接去getBean
+
+3、通过反射将上面getBean的实例传入set方法的参数中，完成方法的调用，实现注入
+
+byType原理
+
+1. 先找出所有的setter方法，拿到String beanName    ---->（【setAge-->age】）
 2. 将配置的beanName对应的bean注入setter方法 的入参中
 3. 然后通过**反射调用setter方法**
 
-构造方法：constructor是使用构造
+#### 构造方法
 
-default是使用beans标签里的类型
+如果是byType或byName，那么该bean**一定要有一个无参的构造方法**，因为如果只有有参构造方法，那么Spring将无法进行实例化，因为Spring如果要实例化肯定需要利用构造方法，而Spring没法给构造方法传值。
 
-no是不使用自动注入
+如果是constructor，那么就可以不写set方法了，当某个bean是通过构造方法来注入时，表示Spring在利用构造方法实例化一个对象时，可以利用构造方法的参数信息从Spring容器中去找bean，找到bean之后作为参数传给构造方法，从而实例化得到一个bean对象。
 
-#### 源码
+#### default
+
+是使用beans标签里的类型
+
+#### no
+
+是不使用自动注入
+
+### 源码
 
 在填充属性后，填充属性后的后置处理器 之前，这个是spring自带的，而注解通过后置处理器扩展的，相当于一个插件实现的，spring默认安装了这个插件
 
@@ -1984,7 +2028,7 @@ if (mbd.getResolvedAutowireMode() == AUTOWIRE_BY_NAME || mbd.getResolvedAutowire
 
 ==byName是找到所有的set方法的方法名==（这里的方法名是去除了set字符的setAge--age）
 
-==byType是找到所有的set方法的入参的类型==(setAge(Age otherName) ---  age--Age类型) 这里要求参数只能一个，多了注入不了，@Autowired的允许多个参数，而且不需要是set方法，任何方法都行
+==byType是先找到所有的set方法名，然后根据方法的入参的类型进行判断==(setAge(Age otherName) ---  age--Age类型) 这里要求参数只能一个，多了注入不了，@Autowired的允许多个参数，而且不需要是set方法，任何方法都行
 
 ![image-20201026160226597](springIOC.assets/image-20201026160226597.png)
 
@@ -2046,7 +2090,7 @@ protected void autowireByName(
 
 org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory#autowireByType
 
-先通过1的unsatisfiedNonSimpleProperties方法找到了所有set方法的属，然后通过解析器进行byType解析，这里的方法和Autowired注解 的筛选方法一致，只是最后无法进行byName，因为在创建属性描述的时候没有将set方法得到参数名放入parameterName中，导致最后byType选出多个 bean后无法进行ByName操作直接报错
+先通过第一步中的的unsatisfiedNonSimpleProperties方法找到了所有set方法的属，然后通过解析器进行byType解析，这里的方法和Autowired注解 的筛选方法一致，只是最后无法进行byName，因为在创建属性描述的时候没有将set方法得到参数名放入parameterName中，导致最后byType选出多个 bean后无法进行ByName操作直接报错
 
 ```java
 Caused by: org.springframework.beans.factory.NoUniqueBeanDefinitionException: No qualifying bean of type 'bat.ke.qq.com.bean.Binterface' available: expected single matching bean but found 2: bimpl1,bimpl2
@@ -2068,7 +2112,7 @@ protected void autowireByType(
 
    Set<String> autowiredBeanNames = new LinkedHashSet<>(4);
 
-   // 同样是找到set方法对应的属性
+   // 同样是找到set方法对应的属性--方法名age
    String[] propertyNames = unsatisfiedNonSimpleProperties(mbd, bw);
    for (String propertyName : propertyNames) {
       try {
@@ -2124,6 +2168,28 @@ if (pvs != null) {
 
 
 ## ②  @Autowired的注解
+
+### 产生的背景
+
+@Autowired注解相当于XML中的autowire属性的**注解方式的替代**。这是在官网上有提到的。
+
+```java
+Essentially, the @Autowired annotation provides the same capabilities as described in Autowiring Collaborators but with more fine-grained control and wider applicability
+//翻译一下：
+//从本质上讲，@Autowired注解提供了与autowire相同的功能，但是拥有更细粒度的控制和更广泛的适用性。
+```
+
+==细粒度是重点==
+
+1. XML中的autowire控制的是整个bean的所有属性和set方法和一个构造器，而@Autowired注解是直接写在某个属性、普通方法、多个构造方法上的。
+2. 如果一个类有多个构造方法，那么如果用XML的autowire=constructor，你无法控制到底用哪个构造方法，而你可以用@Autowired注解来直接指定你想用哪个构造方法。
+3. 用@Autowired注解，还可以控制，哪些属性想被自动注入，哪些属性不想，这也是细粒度的控制。
+
+缺点：@Autowired无法区分byType和byName，@Autowired是先byType，如果找到多个则byName。
+
+### 原理
+
+[@Autowired的依赖注入-原理图](springIOC.assets/1603021389507-04927956-e2f1-4d99-874f-207fcdd4f92a.png)
 
 **原理：是先byType然后再byName   因为，byName有可能不是需要的类型，找到了没用**
 
@@ -2208,6 +2274,8 @@ org.springframework.beans.factory.annotation.AutowiredAnnotationBeanPostProcesso
 
 #### 3、注入的逻辑
 
+具体的见 ----   @Autowired的依赖注入-原理图
+
 在BeanPostProcessor中实现的，在  属性填充后   的处理逻辑中
 
 org.springframework.beans.factory.config.InstantiationAwareBeanPostProcessor#postProcessProperties
@@ -2266,6 +2334,10 @@ public PropertyValues postProcessProperties(PropertyValues pvs, Object bean, Str
 ```
 
 在方法上，同样的处理方式，只是在最后会通过反射去**==调用注入点上的方法==**
+
+
+
+
 
 
 
@@ -2794,6 +2866,14 @@ private UserService userService;
 ```java
 !isSelfReference(beanName, candidate)
 ```
+
+
+
+# 推断构造方法
+
+2020-11-01
+
+
 
 
 
