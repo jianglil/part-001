@@ -1959,7 +1959,7 @@ AbstractAutowireCapableBeanFactory#applyBeanPostProcessorsAfterInitialization
 
 构造方法注入见推断构造方法章节
 
-### 注入类型
+### 注入类型及其原理
 
 ![image-20201019104957798](springIOC.assets/image-20201019104957798.png)
 
@@ -1977,9 +1977,11 @@ byName原理
 
 byType原理
 
-1. 先找出所有的setter方法，拿到String beanName    ---->（【setAge-->age】）
-2. 将配置的beanName对应的bean注入setter方法 的入参中
-3. 然后通过**反射调用setter方法**
+1. 先找出所有的setter方法名    ---->（【setAge-->age】）
+2. 根据set方法名重新获取得到PropertyDescriptor,
+3. 拿到set方法的参数列表，这里只允许1个参数
+4. 根据类型进行byType，get到了唯一的一个就成功返回（集合例外）
+5. 然后通过**反射调用setter方法**
 
 #### 构造方法
 
@@ -1995,7 +1997,7 @@ byType原理
 
 是不使用自动注入
 
-### 源码
+### 源码分析
 
 在填充属性后，填充属性后的后置处理器 之前，这个是spring自带的，而注解通过后置处理器扩展的，相当于一个插件实现的，spring默认安装了这个插件
 
@@ -2050,6 +2052,56 @@ static final String SET_PREFIX = "set";
 static final String IS_PREFIX = "is";
 ```
 
+#### 1.1找set方法
+
+org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory #unsatisfiedNonSimpleProperties
+
+```java
+//找到所有set方法的属性  这里有规则属性名和setter方法的方法名需要匹配
+String[] propertyNames = unsatisfiedNonSimpleProperties(mbd, bw);
+```
+
+内部方法
+
+```java
+protected String[] unsatisfiedNonSimpleProperties(AbstractBeanDefinition mbd, BeanWrapper bw) {
+   // bw是当前属性填充的bean的实例
+   Set<String> result = new TreeSet<>();
+   PropertyValues pvs = mbd.getPropertyValues();
+
+   //通过bean的实例可以拿到属性的描述---因为是属性的注入   当一个类没有属性时，也会有这个描述
+   //这个返回 的是jdk中的对象，描述中会有set方法，get方法，以及set的参数列表，get的返回值等  byType需要用的到set方法的参数类型
+   //name是set的方法的名字去除了set
+   PropertyDescriptor[] pds = bw.getPropertyDescriptors();
+   for (PropertyDescriptor pd : pds) {
+      //有set方法   
+      if (pd.getWriteMethod() != null && !isExcludedFromDependencyCheck(pd) && !pvs.contains(pd.getName()) &&
+            !BeanUtils.isSimpleProperty(pd.getPropertyType())) {
+         result.add(pd.getName());
+      }
+   }
+   return StringUtils.toStringArray(result);
+}
+```
+
+#### 1.2 PropertyDescriptor对象
+
+在创建Bean的过程中，在填充属性时，Spring会去解析当前类，把当前类的所有方法都解析出来，Spring会去解析每个方法得到对应的PropertyDescriptor对象，注意PropertyDescriptor**并不是Spring中的类，而是java.beans包下类**，也就是jdk自带的类，PropertyDescriptor中有几个属性：
+
+```txt
+1. name：这个name并不是方法的名字，而是拿方法名字进过处理后的名字
+    a. 如果方法名字以“get”开头，比如“getXXX”,那么name=XXX
+    b. 如果方法名字以“is”开头，比如“isXXX”,那么name=XXX
+    c. 如果方法名字以“set”开头，比如“setXXX”,那么name=XXX
+2. readMethodRef：表示get方法的Method对象的引用
+3. readMethodName：表示get方法的名字
+4. writeMethodRef：表示set方法的Method对象的引用
+5. writeMethodName：表示set方法的名字
+6. propertyTypeRef：如果有get方法那么对应的就是返回值的类型，如果是set方法那么对应的就是set方法中唯一参数的类型
+```
+
+
+
 #### 2.1、byName获取到唯一的依赖
 
 org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory#autowireByName
@@ -2090,7 +2142,15 @@ protected void autowireByName(
 
 org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory#autowireByType
 
-先通过第一步中的的unsatisfiedNonSimpleProperties方法找到了所有set方法的属，然后通过解析器进行byType解析，这里的方法和Autowired注解 的筛选方法一致，只是最后无法进行byName，因为在创建属性描述的时候没有将set方法得到参数名放入parameterName中，导致最后byType选出多个 bean后无法进行ByName操作直接报错
+先通过第一步中的的unsatisfiedNonSimpleProperties方法找到了该bean中的所有set方法遍历执行解析方法resolveDependency，这里的方法和Autowired注解 的筛选方法一致，只是最后无法进行byName，因为在创建属性描述DependencyDescriptor的时候`new AutowireByTypeDependencyDescriptor(methodParam, eager)`这个是DependencyDescriptor的子类，是没有DependencyName属性的。在最后byType选出多个 bean后getDependencyName无法进行ByName操作直接报错
+
+```
+@Override
+//这里是禁止byName
+public String getDependencyName() {
+   return null;
+}
+```
 
 ```java
 Caused by: org.springframework.beans.factory.NoUniqueBeanDefinitionException: No qualifying bean of type 'bat.ke.qq.com.bean.Binterface' available: expected single matching bean but found 2: bimpl1,bimpl2
@@ -2127,7 +2187,7 @@ protected void autowireByType(
             MethodParameter methodParam = BeanUtils.getWriteMethodParameter(pd);
             // Do not allow eager init for type matching in case of a prioritized post-processor.
             boolean eager = !PriorityOrdered.class.isInstance(bw.getWrappedInstance());
-            //根据类型找到bean  这就是byType
+            //根据类型找到bean  这就是byType  这里的desc没有setBeanName 后续无法进行byName操作
             DependencyDescriptor desc = new AutowireByTypeDependencyDescriptor(methodParam, eager);
             //这里走到了Autowired的逻辑里了，就是byType的逻辑，重点是desc描述中没有将参数的name放进去，
             // 导致byType出多个bean的时候无法byName，直接报错
@@ -2152,7 +2212,11 @@ protected void autowireByType(
 }
 ```
 
+#### 2.2.1、byType核心逻辑
+
 org.springframework.beans.factory.support.**DefaultListableBeanFactory#resolveDependency**
+
+见  详解  resolveDependency
 
 
 
@@ -2167,7 +2231,9 @@ if (pvs != null) {
 
 
 
-## ②  @Autowired的注解
+## 分析注解中的自动注入
+
+主要是@Autowired 也可以有@Value @Resource
 
 ### 产生的背景
 
@@ -2187,21 +2253,60 @@ Essentially, the @Autowired annotation provides the same capabilities as describ
 
 缺点：@Autowired无法区分byType和byName，@Autowired是先byType，如果找到多个则byName。
 
-### 原理
+### 注入类型及其原理
+
+2020-10-20 43：00
+
+#### @Autowired方式
+
+是  ==后置处理器的一种应用==，可以将@Autowired的方式的自动注入看成一种插件，加上注解了就能触发插件的功能==自动注入
+
+原理
 
 [@Autowired的依赖注入-原理图](springIOC.assets/1603021389507-04927956-e2f1-4d99-874f-207fcdd4f92a.png)
 
-**原理：是先byType然后再byName   因为，byName有可能不是需要的类型，找到了没用**
+==先byType然后再byName==   因为，byName有可能不是需要的类型，找到了没用
 
-==后置处理器的一种应用==
+byType   是和xml中的autowire为byType调用的方法一致，调用的是 resolveDependency                                            byName 的原理和xml中的autowire为byName的一致，都是直接拿到唯一的beanName进行 getBean操作
 
-普通方法（方法参数可以多个，不一定是set方法，比byType更优）
+@Autowired可以注入的点：任意属性、任何形式的构造方法上、任何普通方法上（方法参数可以多个，不一定是set方法，比byType更优）
 
-构造方法
+1. 属性上：先根据属性类型去找Bean，如果找到多个再根据属性名确定一个
+2. 构造方法上：先根据方法参数类型去找Bean，如果找到多个再根据参数名确定一个
+3. set方法上：先根据方法参数类型去找Bean，如果找到多个再根据参数名确定一个
 
-属性
+#### @Value
 
-### 源码-@Autowired&@Value
+2020-10-20 44：00
+
+@Value一般是用来将配置文件中的内容注入到属性上，但是通过EL表达式也可以实现任意类型bean的注入
+
+原理
+
+@Value是@Autowired流程中的一个步骤，当出现@Value时，只会走到@Value逻辑截止，不会去处理@Autowrited注解后续的流程了，解析注解中的唯一属性value，
+
+
+
+解析EL表达式
+
+![image-20201109183506427](springIOC.assets/image-20201109183506427.png)
+
+
+
+#### @Resource
+
+原理
+
+[@Resource的原理图](springIOC.assets/1603349673878-2fb09321-8e63-4a5e-a362-f3edb833631c.png)
+
+1. 如果@Resource注解中指定了name属性，那么则只会根据name属性的值去找bean，如果找不到则报错
+2. 如果@Resource注解没有指定name属性，那么会先判断当前注入点名字（属性名字或方法参数名字）是不是存在Bean，如果存在，则直接根据注入点名字取获取bean，如果不存在，则会走@Autowired注解的逻辑，会根据注入点类型去找Bean
+
+
+
+### 源码分析
+
+-@Autowired&@Value
 
 [分析原理](springIOC.assets/@Autowired & @Value.png)
 
@@ -2366,15 +2471,6 @@ org.springframework.context.annotation.CommonAnnotationBeanPostProcessor.Resourc
 org.springframework.context.annotation.CommonAnnotationBeanPostProcessor#getResource
 
 org.springframework.context.annotation.CommonAnnotationBeanPostProcessor#autowireResource
-
-
-
-![@Resource注解底层工作原理.png](springIOC.assets/1603349673878-2fb09321-8e63-4a5e-a362-f3edb833631c.png)
-
-对于@Resource：
-
-1. 如果@Resource注解中指定了name属性，那么则只会根据name属性的值去找bean，如果找不到则报错
-2. 如果@Resource注解没有指定name属性，那么会先判断当前注入点名字（属性名字或方法参数名字）是不是存在Bean，如果存在，则直接根据注入点名字取获取bean，如果不存在，则会走@Autowired注解的逻辑，会根据注入点类型去找Bean
 
 ## 依赖注入重要组件
 
@@ -2599,7 +2695,16 @@ else {
 }
 ```
 
-### 6.1 DependencyDescriptor是Optional
+### 6.1 Optional
+
+DependencyDescriptor是Optional
+
+```java
+//1、先 判断属性的类型  Optional   ObjectFactory   其它的
+if (Optional.class == descriptor.getDependencyType()) {
+    return createOptionalDependency(descriptor, requestingBeanName);
+}
+```
 
 org.springframework.beans.factory.support.DefaultListableBeanFactory#createOptionalDependency
 
@@ -2607,7 +2712,19 @@ org.springframework.beans.factory.support.DefaultListableBeanFactory#createOptio
 
 这里没有延迟加载
 
-### 6.2 DependencyDescriptor是ObjectFactory
+### 6.2 ObjectFactory
+
+DependencyDescriptor是ObjectFactory
+
+```java
+if (ObjectFactory.class == descriptor.getDependencyType() ||
+         ObjectProvider.class == descriptor.getDependencyType()) {
+    // 在org.springframework.beans.factory.support.DefaultListableBeanFactory.
+    //DependencyObjectProvider.getObject()
+    //这里调用了 createOptionalDependency方法---Optional也调用的
+    return new DependencyObjectProvider(descriptor, requestingBeanName);
+}
+```
 
 org.springframework.beans.factory.support.DefaultListableBeanFactory.DependencyObjectProvider
 
@@ -2617,7 +2734,7 @@ org.springframework.beans.factory.support.DefaultListableBeanFactory.DependencyO
 
 
 
-### 6.3 是否延迟加载
+### 6.3 @lazy
 
 懒加载的==直接返回一个代理对象==
 
@@ -2638,9 +2755,9 @@ org.springframework.beans.factory.support.DefaultListableBeanFactory#doResolveDe
 
 
 
-### 7.1 是否存在@Value
+### 7.1 @Value
 
-存在@value  ==直接通过byName的方式返回依赖对象==
+是否存在@value  ==直接通过byName的方式返回依赖对象==
 
 ```java
 // 4、 判断是否有@Value注解 有就返回注解内容并解析，就不会再往下走了
@@ -2682,7 +2799,7 @@ if (multipleBeans != null) {
 
 resolveMultipleBeans这里直接调用下面的byType方法获取所有符合type类型的实例化的bean，注入到对应的容器中
 
-### 7.3  byType
+### 7.3  findAutowireCandidates--byType
 
 这里获取了所有符合类型的bean（这个bean可能没有实例化，只是个class），如果没有获取到就 抛异常了
 
