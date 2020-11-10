@@ -2283,15 +2283,25 @@ byType   是和xml中的autowire为byType调用的方法一致，调用的是 re
 
 原理
 
-@Value是@Autowired流程中的一个步骤，当出现@Value时，只会走到@Value逻辑截止，不会去处理@Autowrited注解后续的流程了，解析注解中的唯一属性value，
+原理图就是@Autowired原理图中的开头到@Value截止，@Value是@Autowired流程中的一个步骤，当出现@Value时，只会走到@Value逻辑截止，不会去处理@Autowrited注解后续的流程了。
 
+==先对`$`符号进解析，若不是这个符号就对`#`符号进行解析。==
 
+对`$`符号进解析：@Value对于key-value的配置文件信息注入，直接利用占位符${xxx}，然后从Environment对象中获取xxx对于的value值返回，这个值是个String类型的，会根据被注入的属性类型或者方法参数类型进行判断是否需要进行类型转化（String类型的注入不需要转化），其它类型就需要自定义一个将String转为指定类型的转化器
 
-解析EL表达式
+对`#`符号进解析：这个符号可以是任意的SpringEL 表达式，例如可以是一个beanName，这里解析的时候就直接byName进行getBean注入了，同样会经过类型转化。
+
+解析EL表达式的堆栈信息
 
 ![image-20201109183506427](springIOC.assets/image-20201109183506427.png)
 
+@Value可以放在属性上，普通方法上，不能应用在构造器上
 
+![image-20201110112044776](springIOC.assets/image-20201110112044776.png)
+
+不能用在构造器上
+
+![image-20201110111313635](springIOC.assets/image-20201110111313635.png)
 
 #### @Resource
 
@@ -2299,14 +2309,14 @@ byType   是和xml中的autowire为byType调用的方法一致，调用的是 re
 
 [@Resource的原理图](springIOC.assets/1603349673878-2fb09321-8e63-4a5e-a362-f3edb833631c.png)
 
-1. 如果@Resource注解中指定了name属性，那么则只会根据name属性的值去找bean，如果找不到则报错
-2. 如果@Resource注解没有指定name属性，那么会先判断当前注入点名字（属性名字或方法参数名字）是不是存在Bean，如果存在，则直接根据注入点名字取获取bean，如果不存在，则会走@Autowired注解的逻辑，会根据注入点类型去找Bean
+1. 如果@Resource注解中指定了name属性，直接ByName
+2. 如果@Resource注解没有指定name属性，那么会先判断当前注入点名字（属性名字或方法参数名字）是不是存在Bean，如果存在，则直接根据注入点名字取获取bean，如果不存在，则会走@Autowired注解的逻辑，会根据注入点类型去找Bean，但后续的byName是无效的，因为之前就byName了，所以byType返回多个也是错误的
 
-
+@Resource用在属性和方法上
 
 ### 源码分析
 
--@Autowired&@Value
+@Autowired & @Value
 
 [分析原理](springIOC.assets/@Autowired & @Value.png)
 
@@ -3385,7 +3395,9 @@ org.springframework.beans.factory.annotation.AutowiredAnnotationBeanPostProcesso
 
 
 
+# 类型转化器
 
+2020-10-11 
 
 
 
