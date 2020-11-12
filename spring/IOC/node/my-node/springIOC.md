@@ -1899,17 +1899,27 @@ AbstractAutowireCapableBeanFactory#applyBeanPostProcessorsAfterInitialization
 
 # 依赖注入
 
-2020-10-18 周日 20:00-22:00
+2020-10-18  原理是前面到40：20，源码是40：20开始
+
+
+
+
 
 ## 本节==不讲构造方法注入==
 
 本节主要分析==属性的注入==和==非构造方法的注入==，对于构造方法的注入见推断构造方法
 
+## 在生命周期中的population
 
+![image-20201112143417252](springIOC.assets/image-20201112143417252.png)
 
 
 
 ## 分类
+
+在jdk中，我们描述一个类依赖另一个类，我们只需要在一个类里面加上一个属性字段，字段的类型是另一个被依赖的类就可以了。----这是jdk的规则
+
+在spring中自定了一套规则来处理bean之间的依赖关系，就是使用set方法或者注解等。----这是spring中的规则
 
 ### 第一类手动
 
@@ -1948,6 +1958,8 @@ AbstractAutowireCapableBeanFactory#applyBeanPostProcessorsAfterInitialization
 
 
 ## 分析xml中的自动注入 
+
+2020-10-18  原理是前面到40：20，源码是40：20开始
 
 ### 基于setter方法、构造方法
 
@@ -2054,6 +2066,8 @@ static final String IS_PREFIX = "is";
 
 #### 1.1找set方法
 
+2020-10-18 55：00
+
 org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory #unsatisfiedNonSimpleProperties
 
 ```java
@@ -2067,6 +2081,7 @@ String[] propertyNames = unsatisfiedNonSimpleProperties(mbd, bw);
 protected String[] unsatisfiedNonSimpleProperties(AbstractBeanDefinition mbd, BeanWrapper bw) {
    // bw是当前属性填充的bean的实例
    Set<String> result = new TreeSet<>();
+    //beanDefinition 中set了的属性列表
    PropertyValues pvs = mbd.getPropertyValues();
 
    //通过bean的实例可以拿到属性的描述---因为是属性的注入   当一个类没有属性时，也会有这个描述
@@ -2084,7 +2099,9 @@ protected String[] unsatisfiedNonSimpleProperties(AbstractBeanDefinition mbd, Be
 }
 ```
 
-#### 1.2 PropertyDescriptor对象
+#### 1.2 PropertyDescriptor
+
+属性描述，这里的属性是set或get方法（是jdk的beans内部的一个定义），而不是属性字段，里面封装了set方法的参数列表信息
 
 在创建Bean的过程中，在填充属性时，Spring会去解析当前类，把当前类的所有方法都解析出来，Spring会去解析每个方法得到对应的PropertyDescriptor对象，注意PropertyDescriptor**并不是Spring中的类，而是java.beans包下类**，也就是jdk自带的类，PropertyDescriptor中有几个属性：
 
@@ -2100,7 +2117,13 @@ protected String[] unsatisfiedNonSimpleProperties(AbstractBeanDefinition mbd, Be
 6. propertyTypeRef：如果有get方法那么对应的就是返回值的类型，如果是set方法那么对应的就是set方法中唯一参数的类型
 ```
 
+#### 1.3 DependencyDescriptor
 
+依赖描述，这里指的是需要处理为注入依赖的一种封装，不管是属性注入还是方法的注入都是这个定义
+
+例如：在byType中PropertyDescriptor得到的是set方法的信息，而byType只根据参数的类型进行匹配，所以byType的时候只将参数类型set到DependencyDescriptor对象中
+
+在@Autowired中，DependencyDescriptor对象中需要参数类型还需要参数名，所以在注入的时候统一都是根据这个对象来进行处理的。
 
 #### 2.1、byName获取到唯一的依赖
 
@@ -2218,6 +2241,8 @@ org.springframework.beans.factory.support.**DefaultListableBeanFactory#resolveDe
 
 见  详解  resolveDependency
 
+对于这个byType，因为传入的依赖描述是DependencyDescriptor的子类AutowireByTypeDependencyDescriptor，这个类重写了getDependencyName，返回的是null，所以在执行解析依赖方法resolveDependency时，byType出多个后，会getDependencyName去执行byName，而这里的getDependencyName是null，直接抛异常
+
 
 
 #### 3、反射调用set方法，入参就是依赖bean
@@ -2232,6 +2257,8 @@ if (pvs != null) {
 
 
 ## 分析注解中的自动注入
+
+2020-10-18  源码是1:37：20开始
 
 主要是@Autowired 也可以有@Value @Resource
 
@@ -2316,17 +2343,44 @@ byType   是和xml中的autowire为byType调用的方法一致，调用的是 re
 
 ### 源码分析
 
-@Autowired & @Value
 
-[分析原理](springIOC.assets/@Autowired & @Value.png)
 
-分析，注解方式的自动注入就是一个插件，利用的就是BeanPostProcessor这个扩展点，这里的实现类是org.springframework.beans.factory.annotation.AutowiredAnnotationBeanPostProcessor
+#### 0、对BeanPostProcessor应用
 
-![image-20201019132825411](springIOC.assets/image-20201019132825411.png)
+##### 被实现的后置处理器
 
-#### 1、注入容器
+```java
+//1、org.springframework.beans.factory.support.MergedBeanDefinitionPostProcessor
+    --找注入点
+//2、org.springframework.beans.factory.config.DestructionAwareBeanPostProcessor
+    --bean的销毁相关  只有@Resource才有
+//3、org.springframework.beans.factory.config.InstantiationAwareBeanPostProcessor
+    --注入逻辑
+```
 
-在类AutowiredAnnotationBeanPostProcessor创建的时候就调了setBeanFactory方法，将这个工厂注入了
+==①、重写`MergedBeanDefinitionPostProcessor#postProcessMergedBeanDefinition`方法找注入点==              						②、销毁的方法没有重写，用的父类`InitDestroyAnnotationBeanPostProcessor`的														==③、重写`CommonAnnotationBeanPostProcessor#postProcessProperties`方法执行注入逻辑，在属性填充后执行==
+
+##### 两个实现类
+
+@Resource`  和   `@Autowired & @Value`
+
+```java
+//@Resource	-- org.springframework.context.annotation.CommonAnnotationBeanPostProcessor
+//@Autowired和@Value--org.springframework.beans.factory.annotation.AutowiredAnnotationBeanPostProcessor
+```
+![spring-ioc-依赖注入-@Resource](springIOC.assets/image-20201111153228572.png)
+
+![spring-ioc-依赖注入-@Autowired & @Value](springIOC.assets/image-20201019132825411.png)
+
+#### 1、@Autowired & @Value
+
+功能都在后置处理器的实现类`org.springframework.beans.factory.annotation.AutowiredAnnotationBeanPostProcessor`
+
+[@Autowired和@Value的源码流程图](springIOC.assets/@Autowired & @Value.png)
+
+#### 1.1、注入容器
+
+在创建后置处理器实现类的时候就调了setBeanFactory方法，将这个工厂注入了
 
 ```java
 //回调BeanFactory的，是在初始化之前调用的
@@ -2340,102 +2394,168 @@ public void setBeanFactory(BeanFactory beanFactory) {
 }
 ```
 
-#### 2、找注入点
+#### 1.2、找注入点
 
-利用了后置处理器org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory #applyMergedBeanDefinitionPostProcessors
+##### 在生命周期中的触发点
+
+实现后置处理器`MergedBeanDefinitionPostProcessor#postProcessMergedBeanDefinition`的方法寻找注入点，在bean的生命周期中的BeanDefinition后置处理器调用的时候执行（在实例化---实例化后后置处理器之间）
 
 ```java
-synchronized (mbd.postProcessingLock) {
-   if (!mbd.postProcessed) {
-      try {
-         //允许后置处理器修改合并的bean定义
-         // MergedBeanDefinitionPostProcessor#postProcessMergedBeanDefinition
-         // 第3次调用后置处理器
-         // AutowiredAnnotationBeanPostProcessor 解析@Autowired和@Value，找到注入点 封装到InjectionMetadata
-         applyMergedBeanDefinitionPostProcessors(mbd, beanType, beanName);
-      }
-      catch (Throwable ex) {
-         throw new BeanCreationException(mbd.getResourceDescription(), beanName,
-               "Post-processing of merged bean definition failed", ex);
-      }
-      mbd.postProcessed = true;
-   }
+@Override
+public void postProcessMergedBeanDefinition(RootBeanDefinition beanDefinition, Class<?> beanType, String beanName) {
+    //找注入点
+   InjectionMetadata metadata = findAutowiringMetadata(beanName, beanType, null);
+   metadata.checkConfigMembers(beanDefinition);
 }
 ```
 
-org.springframework.beans.factory.annotation.AutowiredAnnotationBeanPostProcessor #postProcessMergedBeanDefinition
+##### findAutowiringMetadata
 
-org.springframework.beans.factory.annotation.AutowiredAnnotationBeanPostProcessor #findAutowiringMetadata
-
-
-
-将所有的注入点存放在缓存中org.springframework.beans.factory.annotation.AutowiredAnnotationBeanPostProcessor #injectionMetadataCache
-
-构建缓存点
-
-org.springframework.beans.factory.annotation.AutowiredAnnotationBeanPostProcessor #buildAutowiringMetadata
-
-#### 注入点的条件
-
-是否有@Autowired @Value @Inject中的任意一个
-
-并且 不是静态方法
-
-并且 required属性设置
-
-![image-20201026170514083](springIOC.assets/image-20201026170514083.png)
-
-
-
-#### 3、注入的逻辑
-
-具体的见 ----   @Autowired的依赖注入-原理图
-
-在BeanPostProcessor中实现的，在  属性填充后   的处理逻辑中
-
-org.springframework.beans.factory.config.InstantiationAwareBeanPostProcessor#postProcessProperties
+这个是找注入点的公共方法，先从缓存中找，找到就返回所有注入点，缓存有就去构建符合条件的注入点org.springframework.beans.factory.annotation.AutowiredAnnotationBeanPostProcessor #findAutowiringMetadata
 
 ```java
-//InstantiationAwareBeanPostProcessor.postProcessProperties
-// 第6次调用后置处理器
-// 可以在该方法内对属性值进行修改（此时属性值还未设置，但可以修改原本会设置的进去的属性值）。
-// 如果postProcessAfterInstantiation方法返回false，该方法不会调用
-// 依赖注入逻辑
-for (BeanPostProcessor bp : getBeanPostProcessors()) {
-   if (bp instanceof InstantiationAwareBeanPostProcessor) {
-
-      //@Autowired 属性注入逻辑
-      // AutowiredAnnotationBeanPostProcessor.postProcessProperties
-      //AutowiredAnnotationBeanPostProcessor.AutowiredMethodElement.inject
-      //AutowiredAnnotationBeanPostProcessor.AutowiredFieldElement#inject
-      //DefaultListableBeanFactory#resolveDependency
-      //DefaultListableBeanFactory#doResolveDependency
-      //DependencyDescriptor#resolveCandidate
-      // 此方法直接返回 beanFactory.getBean(beanName);
-
-      InstantiationAwareBeanPostProcessor ibp = (InstantiationAwareBeanPostProcessor) bp;
-      PropertyValues pvsToUse = ibp.postProcessProperties(pvs, bw.getWrappedInstance(), beanName);
-      if (pvsToUse == null) {
-         if (filteredPds == null) {
-            filteredPds = filterPropertyDescriptorsForDependencyCheck(bw, mbd.allowCaching);
-         }
-         pvsToUse = ibp.postProcessPropertyValues(pvs, filteredPds, bw.getWrappedInstance(), beanName);
-         if (pvsToUse == null) {
-            return;
+private InjectionMetadata findAutowiringMetadata(String beanName, Class<?> clazz, @Nullable PropertyValues pvs) {
+   // Fall back to class name as cache key, for backwards compatibility with custom callers.
+   String cacheKey = (StringUtils.hasLength(beanName) ? beanName : clazz.getName());
+   // Quick check on the concurrent map first, with minimal locking.
+   //将注入点缓存起来下次直接使用
+   InjectionMetadata metadata = this.injectionMetadataCache.get(cacheKey);
+   if (InjectionMetadata.needsRefresh(metadata, clazz)) {
+      synchronized (this.injectionMetadataCache) {
+         metadata = this.injectionMetadataCache.get(cacheKey);
+         if (InjectionMetadata.needsRefresh(metadata, clazz)) {
+            if (metadata != null) {
+               metadata.clear(pvs);
+            }
+            // 扫描到@Autowired或@Value修饰的方法和属性，封装成InjectionMetadata对象。
+            metadata = buildAutowiringMetadata(clazz);
+            this.injectionMetadataCache.put(cacheKey, metadata);
          }
       }
-      pvs = pvsToUse;
    }
+   return metadata;
 }
 ```
 
-org.springframework.beans.factory.annotation.AutowiredAnnotationBeanPostProcessor #postProcessProperties
+#####  buildAutowiringMetadata
+
+将满足条件的注入点构造出来org.springframework.beans.factory.annotation.AutowiredAnnotationBeanPostProcessor #buildAutowiringMetadata
+
+```java
+//删除了部分代码
+private InjectionMetadata buildAutowiringMetadata(final Class<?> clazz) {
+   do {
+      // 通过反射从 targetClass 的 field 方法中去找 @Autowired或@Value
+      ReflectionUtils.doWithLocalFields(targetClass, field -> {
+         // 是否存在 @Autowired或@Value
+         AnnotationAttributes ann = findAutowiredAnnotation(field);
+         if (ann != null) {
+            if (Modifier.isStatic(field.getModifiers())) {
+               return;//静态的不处理
+            }
+            //required 为true表示这个依赖必须有不然就在后续依赖注入的时候就报错
+            boolean required = determineRequiredStatus(ann);
+            //存储field方式的注入点  new AutowiredFieldElement
+            currElements.add(new AutowiredFieldElement(field, required));
+         }
+      });
+
+      // 通过反射从 targetClass的method中去找 @Autowired或@Value
+      ReflectionUtils.doWithLocalMethods(targetClass, method -> {
+          // 是否存在 @Autowired或@Value
+         AnnotationAttributes ann = findAutowiredAnnotation(bridgedMethod);
+         if (ann != null && method.equals(ClassUtils.getMostSpecificMethod(method, clazz))) {
+            if (Modifier.isStatic(method.getModifiers())) {
+               return;//静态的不处理
+            }
+            if (method.getParameterCount() == 0) {
+               //没有形参，打个日志
+            }
+             //required 为true表示这个依赖必须有不然就在后续依赖注入的时候就报错
+            boolean required = determineRequiredStatus(ann);
+             //生成方法属性的描述存储  
+            PropertyDescriptor pd = BeanUtils.findPropertyForMethod(bridgedMethod, clazz);
+            currElements.add(new AutowiredMethodElement(method, required, pd));
+         }
+      });
+
+      elements.addAll(0, currElements);
+      //还会递归的去找父类的注入点
+      targetClass = targetClass.getSuperclass();
+   }
+   while (targetClass != null && targetClass != Object.class);
+
+   return new InjectionMetadata(clazz, elements);
+}
+```
+
+##### 如何判断是否有@Autowired或@Value
+
+org.springframework.beans.factory.annotation.AutowiredAnnotationBeanPostProcessor#findAutowiredAnnotation
+
+```java
+//这是个Linked 按照插入顺序取出的，取出顺序 @Autowired @Value Inject
+private final Set<Class<? extends Annotation>> autowiredAnnotationTypes = new LinkedHashSet<>(4);
+
+//构造的时候就存储了  autowiredAnnotationTypes
+public AutowiredAnnotationBeanPostProcessor() {
+    this.autowiredAnnotationTypes.add(Autowired.class);
+    this.autowiredAnnotationTypes.add(Value.class);
+    try {
+        this.autowiredAnnotationTypes.add((Class<? extends Annotation>)
+             ClassUtils.forName("javax.inject.Inject",
+                        		AutowiredAnnotationBeanPostProcessor.class.getClassLoader()));
+    }
+    catch (ClassNotFoundException ex) {
+    }
+}
+
+@Nullable
+private AnnotationAttributes findAutowiredAnnotation(AccessibleObject ao) {
+   if (ao.getAnnotations().length > 0) { 
+      //按照 autowiredAnnotationTypes 的顺序找 找到就返回这个注解信息---优先级@Autowired > @Value
+      //所以@utowired中有required属性，优先处理这个就能兼顾里面属性的配置，而@Value只有一个value没有其他条件
+      for (Class<? extends Annotation> type : this.autowiredAnnotationTypes) {
+         AnnotationAttributes attributes = AnnotatedElementUtils
+             .getMergedAnnotationAttributes(ao, type);
+         if (attributes != null) {
+            return attributes;
+         }
+      }
+   }
+   return null;
+}
+```
+
+实际判断的是  @Autowired @Value @Inject   中的任意一个
+
+返回的是注解信息，@Autowired注解有 required属性
+
+##### 符合注入点的条件
+
+- 有 @Autowired @Value @Inject   中的任意一个
+- 不是静态的
+- 注入点只在普通方法和属性上---这里找不到构造方法的
+
+
+
+
+
+
+
+#### 1.3、注入的逻辑
+
+##### 在生命周期中的触发点
+
+实现后置处理器`MergedBeanDefinitionPostProcessor#postProcessProperties`的方法后，在属性填充后的后置处理器执行时进行注入处理
 
 ```java
 @Override
 public PropertyValues postProcessProperties(PropertyValues pvs, Object bean, String beanName) {
+   //找注入点  找到所有的注入点包括父类的  这里直接从缓存中获取了所有的 注入点了
    InjectionMetadata metadata = findAutowiringMetadata(beanName, bean.getClass(), pvs);
    try {
+      //开始处理注入
       metadata.inject(bean, beanName, pvs);
    }
    catch (BeanCreationException ex) {
@@ -2448,11 +2568,123 @@ public PropertyValues postProcessProperties(PropertyValues pvs, Object bean, Str
 }
 ```
 
-在方法上，同样的处理方式，只是在最后会通过反射去**==调用注入点上的方法==**
+##### 选择处理注入逻辑的类
+
+###### InjectedElement
+
+是个内部类    org.springframework.beans.factory.annotation.==InjectionMetadata.InjectedElement==
+
+###### 实际处理注入逻辑的类
+
+`@Autowired & @Value`方式使用如下：
+
+```java
+//@Autowired & @Value 方式的属性注入用的是AutowiredAnnotationBeanPostProcessor.AutowiredFieldElement#inject
+//@Autowired & @Value 方式的方法注入用的是AutowiredAnnotationBeanPostProcessor.
+AutowiredMethodElement#inject
+```
+
+`@Resource`方式使用如下：
+
+```java
+//org.springframework.beans.factory.annotation.InjectionMetadata.InjectedElement#inject
+```
 
 
 
+######  在哪里开始区分的？
 
+`@Autowired & @Value`方式   在构建注入信息  的时候，按照field和method存储了不同的注入信息，都是AutowiredAnnotationBeanPostProcessor类的内部类---注入的时候就存放的是如下的不同对象，则在执行对象中的处理注入点的方法inject时，就分别走不同的实现方法了
+
+```java
+//两个@Autowired & @Value处理的内部类
+private class AutowiredFieldElement extends InjectionMetadata.InjectedElement 
+private class AutowiredMethodElement extends InjectionMetadata.InjectedElement
+
+//这两个都继承了InjectionMetadata.InjectedElement类，都重写了处理注入点的方法inject
+```
+
+@Resource同样在自己的 构建注入信息的地方
+
+###### 进入各自的处理方法
+
+先从上面的方法进入`org.springframework.beans.factory.annotation.InjectionMetadata#inject`方法，在`inject`这个方法里面使用处理注入逻辑的类`InjectedElement` 这个对象是从注入点的缓存中获取的，而`@Autowired & @Value`方式和 `@Resource`方式的构建注入点的方式不同，所以生成的`InjectedElement` 也是不同的。---这里的方法`@Resource`也会进入只是实现方式不同
+
+```java
+public void inject(Object target, @Nullable String beanName, @Nullable PropertyValues pvs) throws Throwable {
+   Collection<InjectedElement> checkedElements = this.checkedElements;
+   Collection<InjectedElement> elementsToIterate =
+         (checkedElements != null ? checkedElements : this.injectedElements);
+   if (!elementsToIterate.isEmpty()) {
+      for (InjectedElement element : elementsToIterate) {
+         if (logger.isTraceEnabled()) {
+            logger.trace("Processing injected element of bean '" + beanName + "': " + element);
+         }
+         //选择注入逻辑的类
+         element.inject(target, beanName, pvs);
+      }
+   }
+}
+```
+
+
+
+##### AutowiredFieldElement#inject
+
+将缓存中的属性依赖信息封装为`DependencyDescriptor`对象，然后通过筛选依赖的公共方法`resolveDependency`得到一个依赖对象，最后通过反射将对象注入当前bean的属性上
+
+```java
+@Override
+protected void inject(Object bean, @Nullable String beanName, @Nullable PropertyValues pvs) throws Throwable {
+   Field field = (Field) this.member;
+   Object value;
+   if (this.cached) {
+      value = resolvedCachedArgument(beanName, this.cachedFieldValue);
+   }
+   else {
+       //统一封装的依赖描述--这里是对属性方式的依赖的描述
+      DependencyDescriptor desc = new DependencyDescriptor(field, this.required);
+      desc.setContainingClass(bean.getClass());
+      Set<String> autowiredBeanNames = new LinkedHashSet<>(1);
+      Assert.state(beanFactory != null, "No BeanFactory available");
+      TypeConverter typeConverter = beanFactory.getTypeConverter();
+      try {
+         // 返回属性值--这里是筛选依赖对象的公共方法
+         value = beanFactory.resolveDependency(desc, beanName, autowiredBeanNames, typeConverter);
+      }
+      catch (BeansException ex) {
+         throw new UnsatisfiedDependencyException(null, beanName, new InjectionPoint(field), ex);
+      }
+      synchronized (this) {
+         if (!this.cached) {
+            if (value != null || this.required) {
+               this.cachedFieldValue = desc;
+               registerDependentBeans(beanName, autowiredBeanNames);
+               if (autowiredBeanNames.size() == 1) {
+                  String autowiredBeanName = autowiredBeanNames.iterator().next();
+                  if (beanFactory.containsBean(autowiredBeanName) &&
+                        beanFactory.isTypeMatch(autowiredBeanName, field.getType())) {
+                     this.cachedFieldValue = new ShortcutDependencyDescriptor(
+                           desc, autowiredBeanName, field.getType());
+                  }
+               }
+            }
+            else {
+               this.cachedFieldValue = null;
+            }
+            this.cached = true;
+         }
+      }
+   }
+   if (value != null) {
+      ReflectionUtils.makeAccessible(field);
+      // 通过反射设置属性值
+      field.set(bean, value);
+   }
+}
+```
+
+##### AutowiredMethodElement#inject
 
 
 
@@ -2533,7 +2765,17 @@ InjectionMetadata metadata = findAutowiringMetadata(beanName, bean.getClass(), p
 
 org.springframework.beans.factory.support.DefaultListableBeanFactory#resolveDependency
 
+原理就是：解析依赖
 
+重要入参，依赖描述
+
+### 1.3 DependencyDescriptor
+
+依赖描述，这里指的是需要处理为注入依赖的一种封装，不管是属性注入还是方法的注入都是这个定义
+
+例如：在byType中PropertyDescriptor得到的是set方法的信息，而byType只根据参数的类型进行匹配，所以byType的时候只将参数类型set到DependencyDescriptor对象中
+
+在@Autowired中，DependencyDescriptor对象中需要参数类型还需要参数名，所以在注入的时候统一都是根据这个对象来进行处理的。
 
 ### 1、从属性填充后-后置处理器中开始
 
@@ -3398,6 +3640,18 @@ org.springframework.beans.factory.annotation.AutowiredAnnotationBeanPostProcesso
 # 类型转化器
 
 2020-10-11 
+
+
+
+
+
+
+
+
+
+# AOP
+
+2020-11-10 
 
 
 
