@@ -2286,7 +2286,7 @@ Essentially, the @Autowired annotation provides the same capabilities as describ
 
 #### @Autowired方式
 
-是  ==后置处理器的一种应用==，可以将@Autowired的方式的自动注入看成一种插件，加上注解了就能触发插件的功能==自动注入
+是  ==后置处理器的一种应用==，可以将@Autowired的方式的自动注入看成一种插件，加上注解了就能自动注入的功能
 
 原理
 
@@ -2535,6 +2535,7 @@ private AnnotationAttributes findAutowiredAnnotation(AccessibleObject ao) {
 
 - 有 @Autowired @Value @Inject   中的任意一个
 - 不是静态的
+- 方法参数的个数不能为空
 - 注入点只在普通方法和属性上---这里找不到构造方法的
 
 
@@ -2631,14 +2632,16 @@ public void inject(Object target, @Nullable String beanName, @Nullable PropertyV
 
 ##### AutowiredFieldElement#inject
 
-将缓存中的属性依赖信息封装为`DependencyDescriptor`对象，然后通过筛选依赖的公共方法`resolveDependency`得到一个依赖对象，最后通过反射将对象注入当前bean的属性上
+将缓存中的属性依赖信息封装为`DependencyDescriptor`对象，然后通过解析依赖的公共方法`resolveDependency`得到一个依赖对象，最后通过反射将对象注入当前bean的属性上
 
 ```java
+//删除了部分代码
 @Override
 protected void inject(Object bean, @Nullable String beanName, @Nullable PropertyValues pvs) throws Throwable {
    Field field = (Field) this.member;
    Object value;
    if (this.cached) {
+       //---怎么获取在resolveDependency中详解
       value = resolvedCachedArgument(beanName, this.cachedFieldValue);
    }
    else {
@@ -2655,25 +2658,9 @@ protected void inject(Object bean, @Nullable String beanName, @Nullable Property
       catch (BeansException ex) {
          throw new UnsatisfiedDependencyException(null, beanName, new InjectionPoint(field), ex);
       }
+       //存入缓存
       synchronized (this) {
-         if (!this.cached) {
-            if (value != null || this.required) {
-               this.cachedFieldValue = desc;
-               registerDependentBeans(beanName, autowiredBeanNames);
-               if (autowiredBeanNames.size() == 1) {
-                  String autowiredBeanName = autowiredBeanNames.iterator().next();
-                  if (beanFactory.containsBean(autowiredBeanName) &&
-                        beanFactory.isTypeMatch(autowiredBeanName, field.getType())) {
-                     this.cachedFieldValue = new ShortcutDependencyDescriptor(
-                           desc, autowiredBeanName, field.getType());
-                  }
-               }
-            }
-            else {
-               this.cachedFieldValue = null;
-            }
-            this.cached = true;
-         }
+         
       }
    }
    if (value != null) {
@@ -2686,9 +2673,53 @@ protected void inject(Object bean, @Nullable String beanName, @Nullable Property
 
 ##### AutowiredMethodElement#inject
 
+和属性的依赖注入类似，将缓存中的方法参数信息封装为`DependencyDescriptor`对象，然后通过解析依赖的公共方法`resolveDependency`得到一个依赖对象，最后通过调用该方法进行依赖注入
+
+```java
+//删除了部分代码
+@Override
+protected void inject(Object bean, @Nullable String beanName, 
+                      @Nullable PropertyValues pvs) throws Throwable {
+   //构造注入点的时候存储的方法信息   this.buildAutowiringMetadata
+   Method method = (Method) this.member;
+   Object[] arguments;
+   if (this.cached) {
+      //从缓存中获取---怎么获取在resolveDependency中详解
+      arguments = resolveCachedArguments(beanName);
+   }
+   else {
+      Class<?>[] paramTypes = method.getParameterTypes();
+      arguments = new Object[paramTypes.length];
+      DependencyDescriptor[] descriptors = new DependencyDescriptor[paramTypes.length];
+      Set<String> autowiredBeans = new LinkedHashSet<>(paramTypes.length);
+      Assert.state(beanFactory != null, "No BeanFactory available");
+      //需要使用类型转化器 
+      TypeConverter typeConverter = beanFactory.getTypeConverter();
+      
+      for (int i = 0; i < arguments.length; i++) {
+         
+         MethodParameter methodParam = new MethodParameter(method, i);
+         //根据注入点的方法参数信息 构建方法的依赖描述
+         DependencyDescriptor currDesc = new DependencyDescriptor(methodParam, this.required);
+         currDesc.setContainingClass(bean.getClass());
+         descriptors[i] = currDesc;
+         //使用解析依赖的公共方法去获取唯一的依赖对象
+         Object arg = beanFactory.resolveDependency(currDesc, beanName, 
+                                                    autowiredBeans, typeConverter);
+      }
+      //放缓存
+      synchronized (this) {}
+   }
+   if (arguments != null) {
+      //使用方法的invoke进行依赖的注入，直接调用该方法
+      method.invoke(bean, arguments);
+   }
+}
+```
 
 
-### @Resource
+
+### 2、@Resource
 
 这个使用的是org.springframework.context.annotation.CommonAnnotationBeanPostProcessor
 
@@ -2716,13 +2747,13 @@ org.springframework.context.annotation.CommonAnnotationBeanPostProcessor#autowir
 
 ## 依赖注入重要组件
 
+### DependencyDescriptor
 
+不管是xml的自动注入还是注解的，都会使用。是对被依赖的对象的一种封装，是解析依赖的 公共方法`resolveDependency`的入参，解析依赖就是根据这个对象进行的 
 
-不管是xml的自动注入还是注解的，都会使用
+①  xml中的byType如果构造
 
-#### DependencyDescriptor
-
-xml中的byType
+byName不用构造，因为直接getBean了
 
 ```java
 DependencyDescriptor desc = new AutowireByTypeDependencyDescriptor(methodParam, eager);
@@ -2730,13 +2761,13 @@ DependencyDescriptor desc = new AutowireByTypeDependencyDescriptor(methodParam, 
 Object autowiredArgument = resolveDependency(desc, beanName, autowiredBeanNames, converter);
 ```
 
-@Autowired中的method
+②   @Autowired中的method
 
 ```java
 DependencyDescriptor[] descriptors = new DependencyDescriptor[paramTypes.length];
 ```
 
-@Autowired中的field
+③   @Autowired中的field
 
 ```java
 DependencyDescriptor desc = new DependencyDescriptor(field, this.required);
@@ -2744,9 +2775,38 @@ DependencyDescriptor desc = new DependencyDescriptor(field, this.required);
 
 
 
-#### InjectionMetadata 注入点的信息
+### InjectedElement
 
-@Autowired中的注入点
+org.springframework.beans.factory.annotation.InjectionMetadata.InjectedElement   InjectionMetadata的内部类
+
+==注入点的描述类==，他所产生的 一个对象就是 一个注入点，不管是方法的还是属性的。类的内置了对自己这个注入点的解析逻辑。
+
+```java
+//存储了属性或方法的所有信息---类型、名字、参数列表等
+protected final Member member;
+protected final boolean isField;
+@Nullable
+protected final PropertyDescriptor pd;
+@Nullable
+protected volatile Boolean skip;
+//构造器
+protected InjectedElement(Member member, @Nullable PropertyDescriptor pd) {
+   //java中对属性和方法的抽象  Member
+   this.member = member;
+   this.isField = (member instanceof Field);//区分是方法还是属性
+    //属性的描述---get  set 等
+   this.pd = pd;
+}
+//内置的inject方法，用来解析依赖的入口
+protected void inject(Object target, @Nullable String requestingBeanName, 
+                      @Nullable PropertyValues pvs) throws Throwable {}
+```
+
+@Autowired & @Value  方式的依赖注入在后置处理器中定义了两个内部类来继承这个类，并重写了inject方法
+
+org.springframework.beans.factory.annotation.AutowiredAnnotationBeanPostProcessor.AutowiredFieldElement org.springframework.beans.factory.annotation.AutowiredAnnotationBeanPostProcessor.AutowiredMethodElement        这两个子类也是同样的功能，用来描述`@Autowired & @Value`方式的依赖注入的注入点的描述，定义了缓存对象，方法定义了一个数组用来存放多个参数的依赖描述，属性的定义了一个对象来存储依赖描述。---这个依赖描述是什么见--详解resolveDependency---0.2 理解-对解析后的依赖进行缓存操作
+
+InjectionMetadata作为它 的父类就是  注入点的容器，==存储了一个bean的所有注入点==                                                                                        
 
 ```java
 @Nullable
@@ -2754,22 +2814,54 @@ DependencyDescriptor desc = new DependencyDescriptor(field, this.required);
 private volatile Set<InjectedElement> checkedElements;
 ```
 
-注解中找注入点和存储注入点
 
-```java
-//找注入点  找到所有的注入点包括父类的
-InjectionMetadata metadata = findAutowiringMetadata(beanName, bean.getClass(), pvs);
-```
+
+
 
 ## 详解resolveDependency
 
+2020-11-20 21:00  源码：43：39
+
 org.springframework.beans.factory.support.DefaultListableBeanFactory#resolveDependency
 
-原理就是：解析依赖
+目的就是：解析依赖
 
-重要入参，依赖描述
+[原理图](springIOC.assets/resolveDependency-原理图.png)
 
-### 1.3 DependencyDescriptor
+### 原理
+
+```java
+1、先判断依赖描述的类型是否为Optional、ObjectFactory、javax.inject.Provider----有就返回了
+2、都不是的话就判断依赖描述中是否有 `@Lazy`注解---有就使用代理对象返回
+3、以上都不是，就进入doResolveDependency方法
+4、是否加了@Value----有就返回了
+5、以上都不满足，判断依赖描述的类型是否为集合---是的话就利用方法findAutowireCandidates返回所有type符合的
+6、若byType没有找到，判断当前@Autowired的属性required是否为true---为true就抛异常，为false就返回null
+7、若byType找到了一个----直接返回这个对象
+8、若byType找到了多个且有被@Primary标注的对象----选择被标注的对象返回（多个@Primary被标注就抛异常）
+9、若byType找到了多个且有被@Priority标注的对象----选择被标注的对象里面优先级最高的返回（多个最高被标注就抛异常）
+10、以上都不满足且byType找到了多个，那就根据依赖描述中的beanName来确定唯一的一个
+    若不能确定唯一的一个，判断当前@Autowired的属性required是否为true---为true就抛异常，为false就返回null
+    能确定，就返回这个对象，不是实例化的对象就拿着bean的名字getBean
+```
+
+
+
+### 入参和返回值
+
+```
+入参
+dependencyDescriptor    依赖描述
+requestingBeanName      当前需要依赖注入的bean的名字    
+autowiredBeanNames	    依赖对象的bean的名字
+typeConverter	        类型转化器
+
+返回 Object   		就是唯一的依赖对象
+```
+
+
+
+#### 0. DependencyDescriptor
 
 依赖描述，这里指的是需要处理为注入依赖的一种封装，不管是属性注入还是方法的注入都是这个定义
 
@@ -2777,179 +2869,45 @@ org.springframework.beans.factory.support.DefaultListableBeanFactory#resolveDepe
 
 在@Autowired中，DependencyDescriptor对象中需要参数类型还需要参数名，所以在注入的时候统一都是根据这个对象来进行处理的。
 
-### 1、从属性填充后-后置处理器中开始
+#### 0.1 ShortcutDependencyDescriptor
 
-这里找注入点
+依赖描述的快照，这个类描述的是解析依赖后，对依赖对象的beanName和type的封装，存储了依赖描述和最终解析依赖产生的依赖对象的beanName和type的映射关系。
 
-org.springframework.beans.factory.config.InstantiationAwareBeanPostProcessor#postProcessProperties
-
-### 2、走到Autowired的后置处理器中
-
-这里处理注入
-
-org.springframework.beans.factory.annotation.AutowiredAnnotationBeanPostProcessor #postProcessProperties
+重写了父类`DependencyDescriptor`的`resolveShortcut`方法，是`AutowiredAnnotationBeanPostProcessor`的内部类org.springframework.beans.factory.annotation.AutowiredAnnotationBeanPostProcessor.ShortcutDependencyDescriptor
 
 ```java
-@Override
-public PropertyValues postProcessProperties(PropertyValues pvs, Object bean, String beanName) {
-   //找注入点  找到所有的注入点包括父类的
-   InjectionMetadata metadata = findAutowiringMetadata(beanName, bean.getClass(), pvs);
-   try {
-      //开始处理注入
-      metadata.inject(bean, beanName, pvs);
+private static class ShortcutDependencyDescriptor extends DependencyDescriptor {
+   /**
+    * ShortcutDependencyDescriptor 是快照   就是表示之前缓存过的依赖
+    * 当byType找到某个bean后，会利用一个ShortcutDependencyDescriptor 来存储当前 依赖 对应的 bean的名字   shortcut来存储
+    *
+    * 下次找依赖就直接根据  依赖描述对象、解析依赖后产生的beanName、被依赖的对象类型    来直接getBean一个依赖对象
+    *
+    * 为什么不直接缓存依赖对象，考虑的是多例的情况，所以每次把依赖对象的名字和类型拿到直接走一遍getBean就可以了
+    */ 
+   private final String shortcut;
+
+   private final Class<?> requiredType;
+
+   public ShortcutDependencyDescriptor(DependencyDescriptor original, String shortcut, Class<?> requiredType) {
+      super(original);
+      this.shortcut = shortcut;
+      this.requiredType = requiredType;
    }
-   catch (BeanCreationException ex) {
-      throw ex;
-   }
-   catch (Throwable ex) {
-      throw new BeanCreationException(beanName, "Injection of autowired dependencies failed", ex);
-   }
-   return pvs;
-}
-```
 
-### 3、再找一次注入点，并返回所有注入点
-
-org.springframework.beans.factory.annotation.AutowiredAnnotationBeanPostProcessor #findAutowiringMetadata   找注入点--其实在之前就找过
-
-这里先从缓存 injectionMetadataCache 取 InjectionMetadata（注入点） 没有取到就开始构建
-
-3.1、缓存没有，构建注入点  ---这里是能找到 的因为在BeanDefinition后置处理的时候就往缓存中存储了，这里离只是取出来
-
-就是通过反射查询属性上面是否存在@Autowired或@Value注解  存在即返回  @Autowired优先，如果存在Autowired返回的点中只保存了Autowired的，不存在才保存@Value
-
-org.springframework.beans.factory.annotation.AutowiredAnnotationBeanPostProcessor #buildAutowiringMetadata
-
-先从属性中找注入点
-
-```java
-final List<InjectionMetadata.InjectedElement> currElements = new ArrayList<>();
-// 通过反射从 targetClass 的 field 方法中去找 @Autowired或@Value
-ReflectionUtils.doWithLocalFields(targetClass, field -> {
-   // 是否存在 @Autowired或@Value
-   AnnotationAttributes ann = findAutowiredAnnotation(field);
-   if (ann != null) {
-      if (Modifier.isStatic(field.getModifiers())) {
-         if (logger.isInfoEnabled()) {
-            logger.info("Autowired annotation is not supported on static fields: " + field);
-         }
-         return;
-      }
-      //required 为true表示这个依赖必须有不然就在后续依赖注入的时候就报错
-      boolean required = determineRequiredStatus(ann);
-      currElements.add(new AutowiredFieldElement(field, required));
-   }
-});
-```
-
-方法中找的和spring最早的byType一样
-
-```java
-// 通过反射从 targetClass的method中去找 @Autowired或@Value
-ReflectionUtils.doWithLocalMethods(targetClass, method -> {
-   Method bridgedMethod = BridgeMethodResolver.findBridgedMethod(method);
-   if (!BridgeMethodResolver.isVisibilityBridgeMethodPair(method, bridgedMethod)) {
-      return;
-   }
-   AnnotationAttributes ann = findAutowiredAnnotation(bridgedMethod);
-   if (ann != null && method.equals(ClassUtils.getMostSpecificMethod(method, clazz))) {
-      if (Modifier.isStatic(method.getModifiers())) {
-         if (logger.isInfoEnabled()) {
-            logger.info("Autowired annotation is not supported on static methods: " + method);
-         }
-         return;
-      }
-      if (method.getParameterCount() == 0) {
-         if (logger.isInfoEnabled()) {
-            logger.info("Autowired annotation should only be used on methods with parameters: " +
-                  method);
-         }
-      }
-      boolean required = determineRequiredStatus(ann);
-      PropertyDescriptor pd = BeanUtils.findPropertyForMethod(bridgedMethod, clazz);
-      currElements.add(new AutowiredMethodElement(method, required, pd));
-   }
-});
-```
-
-
-
-### 4、开始注入
-
-按照当前创建的beanName下的所有注入点开始注入
-
-org.springframework.beans.factory.annotation.InjectionMetadata#inject
-
-```java
-public void inject(Object target, @Nullable String beanName, @Nullable PropertyValues pvs) throws Throwable {
-   Collection<InjectedElement> checkedElements = this.checkedElements;
-   Collection<InjectedElement> elementsToIterate =
-         (checkedElements != null ? checkedElements : this.injectedElements);
-   if (!elementsToIterate.isEmpty()) {
-       //这里是所有注入点遍历
-      for (InjectedElement element : elementsToIterate) {
-         if (logger.isTraceEnabled()) {
-            logger.trace("Processing injected element of bean '" + beanName + "': " + element);
-         }
-         // element注入的属性
-         
-         element.inject(target, beanName, pvs);
-      }
+   @Override
+   public Object resolveShortcut(BeanFactory beanFactory) {
+       //拿着依赖对象的beanName和type直接getBean出对象
+      return beanFactory.getBean(this.shortcut, this.requiredType);
    }
 }
 ```
 
-org.springframework.beans.factory.annotation.AutowiredAnnotationBeanPostProcessor .AutowiredFieldElement#inject
 
-### 5、属性注入
 
-org.springframework.beans.factory.annotation.AutowiredAnnotationBeanPostProcessor.
+### 1、 Optional
 
-==AutowiredFieldElement#inject==
-
-```java
-// 返回属性值  依赖的对象实例
-value = beanFactory.resolveDependency(desc, beanName, autowiredBeanNames, typeConverter);
-
-//反射注入
-ReflectionUtils.makeAccessible(field);
-// 通过反射设置属性值
-field.set(bean, value);
-```
-
-### 6、筛选并创建依赖实例
-
-org.springframework.beans.factory.support.DefaultListableBeanFactory#resolveDependency
-
-```java
-//1、先 判断属性的类型  Optional   ObjectFactory   其它的
-if (Optional.class == descriptor.getDependencyType()) {
-    return createOptionalDependency(descriptor, requestingBeanName);
-}
-else if (ObjectFactory.class == descriptor.getDependencyType() ||
-         ObjectProvider.class == descriptor.getDependencyType()) {
-    // 在org.springframework.beans.factory.support.DefaultListableBeanFactory.DependencyObjectProvider.getObject()
-    //这里调用了 createOptionalDependency方法
-    return new DependencyObjectProvider(descriptor, requestingBeanName);
-}
-else if (javaxInjectProviderClass == descriptor.getDependencyType()) {
-    return new Jsr330Factory().createDependencyProvider(descriptor, requestingBeanName);
-}
-else {
-    //2、 判断 是否是懒加载 @Lazy  是：返回代理对象  当代理对象被调用，即属性被使用的时候才会去创建被注入的对象
-    Object result = getAutowireCandidateResolver().getLazyResolutionProxyIfNecessary(
-        descriptor, requestingBeanName);
-    if (result == null) {
-        //3、 开始后续的筛选
-        result = doResolveDependency(descriptor, requestingBeanName, autowiredBeanNames, typeConverter);
-    }
-    return result;
-}
-```
-
-### 6.1 Optional
-
-DependencyDescriptor是Optional
+DependencyDescriptor的类型是Optional
 
 ```java
 //1、先 判断属性的类型  Optional   ObjectFactory   其它的
@@ -2964,7 +2922,7 @@ org.springframework.beans.factory.support.DefaultListableBeanFactory#createOptio
 
 这里没有延迟加载
 
-### 6.2 ObjectFactory
+### 2、 ObjectFactory
 
 DependencyDescriptor是ObjectFactory
 
@@ -2986,7 +2944,9 @@ org.springframework.beans.factory.support.DefaultListableBeanFactory.DependencyO
 
 
 
-### 6.3 @lazy
+### 3、 @lazy
+
+依赖描述中有@Lazy，即注入点上有@Lazy注解
 
 懒加载的==直接返回一个代理对象==
 
@@ -3001,9 +2961,135 @@ if (result == null) {
 return result;
 ```
 
-### 7、doResolveDependency 6次筛选
+### 4、doResolveDependency 6次筛选
 
 org.springframework.beans.factory.support.DefaultListableBeanFactory#doResolveDependency
+
+### 1、 从缓存中获取已经解析过的依赖
+
+**多例的场景才有**
+
+例： `AutowiredFieldElement#inject`里面对 缓存  的操作   分析
+
+首先这个方法是在内部类`AutowiredAnnotationBeanPostProcessor.AutowiredFieldElement`中，这个类继承了注入点描述类`InjectedElement`。在InjectedElement的描述中说明了内部的关系。
+
+理解了这个类的描述后，类的属性就是每个需要依赖注入的属性独有的了。 `this.cached`就是每个依赖描述独有的。如果这个属性之前被处理过，`this.cached = true`
+
+原理：
+
+1、一开始是没有缓存的，所以先执行解析依赖操作`resolveDependency`,处理完后产生了可以缓存的对象
+
+```
+返回的
+`value`是解析出来的唯一的依赖对象，
+`desc`是依赖描述，
+`autowiredBeanNames`是这个依赖对象的beanName集合（考虑别名）,
+`typeConverter`是类型转化器
+```
+
+2、考虑缓存的内容是什么？
+
+因为有一种scope是prototype类型，所以这里缓存的依赖对象如果是个原型的，那每次从缓存拿的都是这第一次产出的对象，所以缓存的内容不能是这个依赖对象`value`。==缓存的是这个依赖对象的beanName和type==。即`autowiredBeanNames`和`field.getType()`
+
+3、封装缓存内容ShortcutDependencyDescriptor
+
+为了方便拿缓存，第二次进入`inject`方法一定也是这个bean构建的时候，只有多例的场景，这里封装了属性描述、依赖对象的beanName、依赖对象的类型。这里放入依赖描述是为了从缓存中获取依赖对象的时候要用
+
+```java
+//删除了部分代码
+@Override
+protected void inject(Object bean, @Nullable String beanName, @Nullable PropertyValues pvs) throws Throwable {
+   Field field = (Field) this.member;
+   Object value;
+   if (this.cached) {
+       //从缓存中获取
+      value = resolvedCachedArgument(beanName, this.cachedFieldValue);
+   }
+   else {
+      //统一封装的依赖描述--这里是对属性方式的依赖的描述
+      DependencyDescriptor desc = new DependencyDescriptor(field, this.required);
+      desc.setContainingClass(bean.getClass());
+      Set<String> autowiredBeanNames = new LinkedHashSet<>(1);
+      Assert.state(beanFactory != null, "No BeanFactory available");
+      TypeConverter typeConverter = beanFactory.getTypeConverter();
+      // 返回属性值--这里是筛选依赖对象的公共方法   desc是依赖描述  beanName是当前需要依赖注入的bean的名字
+      // autowiredBeanNames 是返回的依赖对象的bean的名字（有别名） typeConverter 是类型转换器
+      value = beanFactory.resolveDependency(desc, beanName, autowiredBeanNames, typeConverter);
+      synchronized (this) {
+         if (!this.cached) {
+            if (value != null || this.required) {
+               this.cachedFieldValue = desc;
+               registerDependentBeans(beanName, autowiredBeanNames);
+               // 如果没有别名 我就缓存这个依赖的beanName   desc 和 autowiredBeanName 、 type
+               if (autowiredBeanNames.size() == 1) {
+                  String autowiredBeanName = autowiredBeanNames.iterator().next();
+                  if (beanFactory.containsBean(autowiredBeanName) &&
+                        beanFactory.isTypeMatch(autowiredBeanName, field.getType())) {
+                     //以快照的方式进行缓存  ShortcutDependencyDescriptor 是 DependencyDescriptor子类，
+                     // 重写了 resolveShortcut 方法
+                     this.cachedFieldValue = new ShortcutDependencyDescriptor(
+                           desc, autowiredBeanName, field.getType());
+                  }
+               }
+            }
+            else {
+               this.cachedFieldValue = null;
+            }
+             //处理过的依赖就可以从缓存中获取
+            this.cached = true;
+         }
+      }
+   }
+}
+```
+
+4、从缓存中获取，由于第一次依赖注入的时候将`cached`设置为了true，所以可以直接进入缓存获取 resolvedCachedArgument
+
+这里又去调用了解析依赖的方法，但是此时的依赖描述对象是`ShortcutDependencyDescriptor`,重写了`resolveShortcut`方法，能直接拿着依赖对象的beanName和type进行`getBean`
+
+```java
+@Nullable
+private Object resolvedCachedArgument(@Nullable String beanName, @Nullable Object cachedArgument) {
+   if (cachedArgument instanceof DependencyDescriptor) {
+      DependencyDescriptor descriptor = (DependencyDescriptor) cachedArgument;
+      Assert.state(this.beanFactory != null, "No BeanFactory available");
+      //这里是缓存获取，走到解析依赖里面是因为，当前 DependencyDescriptor 是一个 快照ShortcutDependencyDescriptor
+      //在resolveDependency的doResolveDependency里面有直接根据快照拿依赖对象的-----这个流程实现了缓存的功效
+      return this.beanFactory.resolveDependency(descriptor, beanName, null, null);
+   }
+   else {
+      return cachedArgument;
+   }
+}
+```
+
+org.springframework.beans.factory.support.DefaultListableBeanFactory#resolveDependency org.springframework.beans.factory.support.DefaultListableBeanFactory#doResolveDependency
+
+org.springframework.beans.factory.annotation.AutowiredAnnotationBeanPostProcessor.ShortcutDependencyDescriptor
+
+```java
+//删除了部分代码
+@Nullable
+public Object doResolveDependency(DependencyDescriptor descriptor, @Nullable String beanName,
+      @Nullable Set<String> autowiredBeanNames, @Nullable TypeConverter typeConverter) throws BeansException {
+	//如果存在快照就直接使用快照拿去---前提 是 Descriptor是 ShortcutDependencyDescriptor 
+    // 才会执行快照获取，否则返回的shortcut==null
+    Object shortcut = descriptor.resolveShortcut(this);
+    if (shortcut != null) {
+        return shortcut;
+    }
+}
+```
+
+org.springframework.beans.factory.annotation.AutowiredAnnotationBeanPostProcessor.ShortcutDependencyDescriptor#resolveShortcut
+
+```java
+@Override
+public Object resolveShortcut(BeanFactory beanFactory) {
+   //拿着依赖对象的beanName和type直接getBean出对象
+   return beanFactory.getBean(this.shortcut, this.requiredType);
+}
+```
 
 
 
@@ -3052,6 +3138,16 @@ if (multipleBeans != null) {
 resolveMultipleBeans这里直接调用下面的byType方法获取所有符合type类型的实例化的bean，注入到对应的容器中
 
 ### 7.3  findAutowireCandidates--byType
+
+这个方法返回的是个map，map的key是找到的依赖对象的beanName，value是找到的依赖对象或者class对象（因为还没有创建出来）。map的key不同（beanName），但是value都是这个类型的对象或者class对象。
+
+例如：{ cat1:Cat对象, cat2:Cat的class对象 }
+
+
+
+根据类型从BeanFactory中找bean，是利用了BeanDefinition中的type属性来找的，所有符合条件的BeanDefinition或者bean对象都会被找出来，不需要实例化后才知道该bean的类型，我在BeanDefinition的时候就知道了这个bean的类型
+
+这里有两个问题：找bean一定是找对象吗？根据类型找bean找到几个 ？
 
 这里获取了所有符合类型的bean（这个bean可能没有实例化，只是个class），如果没有获取到就 抛异常了
 
