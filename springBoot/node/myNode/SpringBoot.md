@@ -73,7 +73,7 @@ public class ConfigApplication {
 
 # Tomcat如何内嵌
 
-
+[图解](SpringBoot.assets/1606313509882-cb9d0f26-3704-440d-84b0-918e24e43125.png)
 
 ## 需要内嵌包
 
@@ -83,7 +83,7 @@ public class ConfigApplication {
 
 
 
-## 需要创建
+## 需要创建需要start
 
 启动流程
 
@@ -310,9 +310,67 @@ private void startDaemonAwaitThread() {
 
 
 
+DispatcherServlet加载
 
+在创建Tomcat过程中，有个关键方法 
 
+org.springframework.boot.web.servlet.context.ServletWebServerApplicationContext#createWebServer
 
+```java
+//创建Servlet容器的时候--Tomcat创建启动的方法入口
+private void createWebServer() {
+   WebServer webServer = this.webServer;
+   ServletContext servletContext = getServletContext();
+   if (webServer == null && servletContext == null) {
+      ServletWebServerFactory factory = getWebServerFactory();
+       // 这里是使用jar包启动的时候  加载DispatcherServlet
+      this.webServer = factory.getWebServer(getSelfInitializer());
+   }
+   else if (servletContext != null) {
+      try {
+          //这里是war包启动的时候  加载DispatcherServlet
+         getSelfInitializer().onStartup(servletContext);
+      }
+      catch (ServletException ex) {
+         throw new ApplicationContextException("Cannot initialize servlet context", ex);
+      }
+   }
+   initPropertySources();
+}
+```
+
+org.springframework.boot.web.servlet.context.ServletWebServerApplicationContext#getSelfInitializer
+
+```java
+private org.springframework.boot.web.servlet.ServletContextInitializer getSelfInitializer() {
+    //在执行 org.springframework.boot.web.servlet.ServletContextInitializer#onStartup的时候会调selfInitialize方法
+   return this::selfInitialize;
+}
+
+private void selfInitialize(ServletContext servletContext) throws ServletException {
+    prepareWebApplicationContext(servletContext);
+    registerApplicationScope(servletContext);
+    WebApplicationContextUtils.registerEnvironmentBeans(getBeanFactory(), servletContext);
+    for (ServletContextInitializer beans : getServletContextInitializerBeans()) {
+        //找到容器内所有的 ServletContextInitializer 实现类 ，然后执行 onStartup方法，就会触发
+        beans.onStartup(servletContext);
+    }
+}
+
+@FunctionalInterface
+public interface ServletContextInitializer {
+
+	/**
+	 * Configure the given {@link ServletContext} with any servlets, filters, listeners
+	 * context-params and attributes necessary for initialization.
+	 * @param servletContext the {@code ServletContext} to initialize
+	 * @throws ServletException if any call against the given {@code ServletContext}
+	 * throws a {@code ServletException}
+	 */
+	void onStartup(ServletContext servletContext) throws ServletException;
+
+}
+```
 
 
 
