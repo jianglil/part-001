@@ -1705,9 +1705,54 @@ public Object postProcessBeforeInitialization(Object bean, String beanName) thro
 
 ## 十九、初始化
 
+这里面会先执行一个  org.springframework.beans.factory.InitializingBean 接口 的  afterPropertiesSet方法，也是扩展点
+
 ```java
 // 执行bean生命周期回调的init方法    自定义bean的init（）
 invokeInitMethods(beanName, wrappedBean, mbd);
+```
+
+
+
+### 这里扩展  InitializingBean
+
+```java
+protected void invokeInitMethods(String beanName, final Object bean, @Nullable RootBeanDefinition mbd)
+      throws Throwable {
+
+   //初始化方法，InitializingBean 接口的  afterPropertiesSet
+   boolean isInitializingBean = (bean instanceof InitializingBean);
+   if (isInitializingBean && (mbd == null || !mbd.isExternallyManagedInitMethod("afterPropertiesSet"))) {
+      if (logger.isTraceEnabled()) {
+         logger.trace("Invoking afterPropertiesSet() on bean with name '" + beanName + "'");
+      }
+      if (System.getSecurityManager() != null) {
+         try {
+            AccessController.doPrivileged((PrivilegedExceptionAction<Object>) () -> {
+               ((InitializingBean) bean).afterPropertiesSet();
+               return null;
+            }, getAccessControlContext());
+         }
+         catch (PrivilegedActionException pae) {
+            throw pae.getException();
+         }
+      }
+      else {
+         // implements InitializingBean
+         ((InitializingBean) bean).afterPropertiesSet();
+      }
+   }
+
+   if (mbd != null && bean.getClass() != NullBean.class) {
+      String initMethodName = mbd.getInitMethodName();
+      if (StringUtils.hasLength(initMethodName) &&
+            !(isInitializingBean && "afterPropertiesSet".equals(initMethodName)) &&
+            !mbd.isExternallyManagedInitMethod(initMethodName)) {
+         // xml init-method
+         invokeCustomInitMethod(beanName, bean, mbd);
+      }
+   }
+}
 ```
 
 ## 二十、初始化后
